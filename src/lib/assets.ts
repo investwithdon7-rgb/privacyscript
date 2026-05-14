@@ -8,10 +8,17 @@
  * usage does not. Use this helper anywhere you'd otherwise write a literal
  * '/whatever.js'.
  *
- * In development with NEXT_PUBLIC_BASE_PATH unset or empty, the basePath
- * collapses to an empty string so paths look like normal '/whatever.js'.
+ * In development set NEXT_PUBLIC_BASE_PATH= (empty) in .env.local to mount
+ * at root so paths look like normal '/whatever.js'.
+ *
+ * IMPORTANT: .env.production sets NEXT_PUBLIC_BASE_PATH=/privacyscript so
+ * every plain `npm run build` bakes in the correct prefix automatically.
+ * If you forget to set it, this fallback catches the oversight.
  */
-export const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
+export const BASE_PATH =
+  process.env.NEXT_PUBLIC_BASE_PATH !== undefined
+    ? process.env.NEXT_PUBLIC_BASE_PATH   // empty string is a valid explicit choice
+    : '/privacyscript';                    // safe default for production builds
 
 export function asset(p: string): string {
   // Normalise: ensure exactly one leading slash on p, and no trailing slash on base.
