@@ -1,26 +1,63 @@
 # Cloudflare Pages security headers.
-# Applies to every response served by privacyscript.pages.dev (and, by the
-# router, tekdruid.com/privacyscript).
+# Applied to every response served by privacyscript.pages.dev and, via the
+# Worker, tekdruid.com/privacyscript.
+#
+# Security decisions documented inline — see CLAUDE.md for compliance mapping.
 
 /*
+  # ── Identity / framing ────────────────────────────────────────────────────
   X-Content-Type-Options: nosniff
   X-Frame-Options: DENY
+  X-Permitted-Cross-Domain-Policies: none
+
+  # ── Referrer / privacy ────────────────────────────────────────────────────
   Referrer-Policy: no-referrer
-  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+
+  # ── Capability restrictions ───────────────────────────────────────────────
+  # Deny every browser API that has no purpose in a de-identification tool.
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), nfc=(), screen-wake-lock=(), display-capture=(), window-management=(), idle-detection=(), interest-cohort=()
+
+  # ── Cross-origin isolation ────────────────────────────────────────────────
+  # COOP + COEP enable SharedArrayBuffer (needed by Tesseract WASM threads).
+  # CORP: same-origin prevents cross-origin reads of our responses.
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
   Cross-Origin-Resource-Policy: same-origin
+
+  # ── CORS — replace Cloudflare Pages default ACAO: * ──────────────────────
+  # No cross-origin code should be able to read responses from this health tool.
+  # The Worker also enforces this; belt-and-braces for direct pages.dev access.
+  Access-Control-Allow-Origin: https://tekdruid.com
+
+  # ── Transport security ────────────────────────────────────────────────────
+  # 2 years, includeSubDomains, preload-eligible.
   Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
 
-  # CSP — strict by default. The only external origin allowed is huggingface.co
-  # and cdn-lfs.huggingface.co, which is required to download the NER model on
-  # first use. The model is then cached in IndexedDB and never re-fetched.
-  # See README "Network Policy".
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://huggingface.co https://cdn-lfs.huggingface.co; worker-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'
+  # ── Content Security Policy ───────────────────────────────────────────────
+  # wasm-unsafe-eval    — required by Transformers.js / Tesseract ONNX WASM.
+  #                       Chrome 95+ separates wasm-unsafe-eval from unsafe-eval;
+  #                       this is the minimal grant needed for in-browser NER.
+  # unsafe-inline (CSS) — required by Tailwind's runtime class generation.
+  #                       No inline scripts are permitted.
+  # huggingface.co      — first-load NER model download only (cached IndexedDB).
+  # upgrade-insecure-requests — forces any accidental http:// ref to https://.
+  # block-all-mixed-content   — belt-and-braces against mixed content.
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co; worker-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests; block-all-mixed-content
 
-# Assets are immutable — hash-prefixed by Next. One year is safe.
+  # ── Caching — default no-store for all pages ─────────────────────────────
+  # Health tool — page HTML must never be cached in the browser (shared device
+  # risk). The more-specific /_next/static/* and /pdf.worker.min.mjs rules
+  # below override this to immutable for content-hashed static assets.
+  # HIPAA §164.530(c), GDPR Art. 32.
+  Cache-Control: no-store, no-cache
+  Pragma: no-cache
+
+# ── Immutable static assets ───────────────────────────────────────────────────
+# Next.js content-hashes every file under _next/static/. The filename changes
+# when the content changes, so a one-year immutable cache is safe and fast.
 /_next/static/*
   Cache-Control: public, max-age=31536000, immutable
 
+# pdf.js worker is also content-stable once deployed.
 /pdf.worker.min.mjs
   Cache-Control: public, max-age=31536000, immutable
