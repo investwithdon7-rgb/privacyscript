@@ -1,0 +1,496 @@
+{
+  "resourceType": "Bundle",
+  "id": "05c4b3f6-bef0-483e-b0a7-f27a367f2ede",
+  "type": "collection",
+  "meta": {
+    "lastUpdated": "2024-03-12T14:22:00Z",
+    "tag": [
+      {
+        "system": "https://tekdruid.com/privacyscript/test",
+        "code": "synthetic",
+        "display": "Synthetic test data — no real patient information"
+      }
+    ]
+  },
+  "entry": [
+    {
+      "fullUrl": "urn:uuid:1d9363e4-ed83-41a0-a68c-f8937621eb7b",
+      "resource": {
+        "resourceType": "Patient",
+        "id": "pat-001",
+        "identifier": [
+          {
+            "use": "official",
+            "system": "https://fhir.nhs.uk/Id/nhs-number",
+            "value": "9434765919"
+          },
+          {
+            "use": "usual",
+            "type": {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                  "code": "MR",
+                  "display": "Medical Record Number"
+                }
+              ]
+            },
+            "value": "MRN-7724831"
+          }
+        ],
+        "active": true,
+        "name": [
+          {
+            "use": "official",
+            "family": "Achterberg",
+            "given": [
+              "Eveline"
+            ]
+          }
+        ],
+        "telecom": [
+          {
+            "system": "phone",
+            "value": "07700 900145",
+            "use": "mobile"
+          },
+          {
+            "system": "email",
+            "value": "eveline.achterberg@example.com",
+            "use": "home"
+          }
+        ],
+        "gender": "female",
+        "birthDate": "1962-03-14",
+        "address": [
+          {
+            "use": "home",
+            "type": "physical",
+            "line": [
+              "14 Linden Court"
+            ],
+            "city": "Manchester",
+            "postalCode": "M14 5TQ",
+            "country": "GB"
+          }
+        ],
+        "communication": [
+          {
+            "language": {
+              "coding": [
+                {
+                  "system": "urn:ietf:bcp:47",
+                  "code": "nl"
+                }
+              ]
+            },
+            "preferred": true
+          }
+        ],
+        "maritalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/v3-MaritalStatus",
+              "code": "M"
+            }
+          ]
+        },
+        "extension": [
+          {
+            "url": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-ethnicity",
+            "extension": [
+              {
+                "url": "text",
+                "valueString": "White Other"
+              }
+            ]
+          },
+          {
+            "url": "http://hl7.org/fhir/us/odh/StructureDefinition/odh-UsualWork",
+            "valueString": "Retired teacher"
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:89b431a7-ac79-40cb-9a9d-b7e141b26304",
+      "resource": {
+        "resourceType": "Patient",
+        "id": "pat-002",
+        "identifier": [
+          {
+            "use": "official",
+            "system": "https://fhir.nhs.uk/Id/nhs-number",
+            "value": "6120847732"
+          },
+          {
+            "use": "usual",
+            "type": {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                  "code": "MR",
+                  "display": "Medical Record Number"
+                }
+              ]
+            },
+            "value": "MRN-7724892"
+          }
+        ],
+        "active": true,
+        "name": [
+          {
+            "use": "official",
+            "family": "Okonkwo",
+            "given": [
+              "Chibueze"
+            ]
+          }
+        ],
+        "telecom": [
+          {
+            "system": "phone",
+            "value": "07700 900218",
+            "use": "mobile"
+          },
+          {
+            "system": "email",
+            "value": "c.okonkwo@example.org",
+            "use": "home"
+          }
+        ],
+        "gender": "male",
+        "birthDate": "1978-11-02",
+        "address": [
+          {
+            "use": "home",
+            "type": "physical",
+            "line": [
+              "42 Saxonbury Avenue, Flat 3"
+            ],
+            "city": "Birmingham",
+            "postalCode": "B15 2TT",
+            "country": "GB"
+          }
+        ],
+        "communication": [
+          {
+            "language": {
+              "coding": [
+                {
+                  "system": "urn:ietf:bcp:47",
+                  "code": "en"
+                }
+              ]
+            },
+            "preferred": true
+          }
+        ],
+        "maritalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/v3-MaritalStatus",
+              "code": "M"
+            }
+          ]
+        },
+        "extension": [
+          {
+            "url": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-ethnicity",
+            "extension": [
+              {
+                "url": "text",
+                "valueString": "Black African"
+              }
+            ]
+          },
+          {
+            "url": "http://hl7.org/fhir/us/odh/StructureDefinition/odh-UsualWork",
+            "valueString": "Civil engineer"
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:a9d8769b-b785-445a-b551-738ffb83915e",
+      "resource": {
+        "resourceType": "Patient",
+        "id": "pat-003",
+        "identifier": [
+          {
+            "use": "usual",
+            "type": {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                  "code": "MR",
+                  "display": "Medical Record Number"
+                }
+              ]
+            },
+            "value": "MRN-8830142"
+          },
+          {
+            "use": "official",
+            "system": "http://hl7.org/fhir/sid/us-ssn",
+            "value": "912-04-5588"
+          }
+        ],
+        "active": true,
+        "name": [
+          {
+            "use": "official",
+            "family": "Whitlock",
+            "given": [
+              "Janelle"
+            ]
+          }
+        ],
+        "telecom": [
+          {
+            "system": "phone",
+            "value": "555-0142",
+            "use": "mobile"
+          },
+          {
+            "system": "email",
+            "value": "janelle.whitlock@example.com",
+            "use": "home"
+          }
+        ],
+        "gender": "female",
+        "birthDate": "1991-07-23",
+        "address": [
+          {
+            "use": "home",
+            "type": "physical",
+            "line": [
+              "2847 Maplewood Drive"
+            ],
+            "city": "Portland",
+            "postalCode": "97214",
+            "country": "US"
+          }
+        ],
+        "communication": [
+          {
+            "language": {
+              "coding": [
+                {
+                  "system": "urn:ietf:bcp:47",
+                  "code": "en"
+                }
+              ]
+            },
+            "preferred": true
+          }
+        ],
+        "maritalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/v3-MaritalStatus",
+              "code": "S"
+            }
+          ]
+        },
+        "extension": [
+          {
+            "url": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-ethnicity",
+            "extension": [
+              {
+                "url": "text",
+                "valueString": "White"
+              }
+            ]
+          },
+          {
+            "url": "http://hl7.org/fhir/us/odh/StructureDefinition/odh-UsualWork",
+            "valueString": "Software developer"
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:9ac7a540-4d44-4f7b-81f9-58ee7b0c862c",
+      "resource": {
+        "resourceType": "Patient",
+        "id": "pat-004",
+        "identifier": [
+          {
+            "use": "official",
+            "system": "https://fhir.nhs.uk/Id/nhs-number",
+            "value": "7752194408"
+          },
+          {
+            "use": "usual",
+            "type": {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                  "code": "MR",
+                  "display": "Medical Record Number"
+                }
+              ]
+            },
+            "value": "MRN-7725003"
+          }
+        ],
+        "active": true,
+        "name": [
+          {
+            "use": "official",
+            "family": "Pemberton-Walsh",
+            "given": [
+              "Aoife"
+            ]
+          }
+        ],
+        "telecom": [
+          {
+            "system": "phone",
+            "value": "07700 900334",
+            "use": "mobile"
+          },
+          {
+            "system": "email",
+            "value": "parents.pemberton@example.com",
+            "use": "home"
+          }
+        ],
+        "gender": "female",
+        "birthDate": "2018-05-30",
+        "address": [
+          {
+            "use": "home",
+            "type": "physical",
+            "line": [
+              "7 Carrickfergus Road"
+            ],
+            "city": "Belfast",
+            "postalCode": "BT15 4PE",
+            "country": "GB"
+          }
+        ],
+        "communication": [
+          {
+            "language": {
+              "coding": [
+                {
+                  "system": "urn:ietf:bcp:47",
+                  "code": "en"
+                }
+              ]
+            },
+            "preferred": true
+          }
+        ],
+        "extension": [
+          {
+            "url": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-ethnicity",
+            "extension": [
+              {
+                "url": "text",
+                "valueString": "White Irish"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:f1d7ed75-9372-4182-9c99-d46ff46c0547",
+      "resource": {
+        "resourceType": "Patient",
+        "id": "pat-005",
+        "identifier": [
+          {
+            "use": "official",
+            "system": "https://fhir.nhs.uk/Id/nhs-number",
+            "value": "8890021146"
+          },
+          {
+            "use": "usual",
+            "type": {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/v2-0203",
+                  "code": "MR",
+                  "display": "Medical Record Number"
+                }
+              ]
+            },
+            "value": "MRN-7725187"
+          }
+        ],
+        "active": true,
+        "name": [
+          {
+            "use": "official",
+            "family": "Ó Murchadha",
+            "given": [
+              "Cathal"
+            ]
+          }
+        ],
+        "telecom": [
+          {
+            "system": "phone",
+            "value": "+353 87 123 4567",
+            "use": "home"
+          }
+        ],
+        "gender": "male",
+        "birthDate": "1955-09-08",
+        "address": [
+          {
+            "use": "home",
+            "type": "physical",
+            "line": [
+              "Apartment 12, Dún Laoghaire Quay"
+            ],
+            "city": "Dublin",
+            "postalCode": "A96 X4K2",
+            "country": "IE"
+          }
+        ],
+        "communication": [
+          {
+            "language": {
+              "coding": [
+                {
+                  "system": "urn:ietf:bcp:47",
+                  "code": "ga"
+                }
+              ]
+            },
+            "preferred": true
+          }
+        ],
+        "deceasedBoolean": true,
+        "maritalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/v3-MaritalStatus",
+              "code": "W"
+            }
+          ]
+        },
+        "extension": [
+          {
+            "url": "http://hl7.org/fhir/us/core/StructureDefinition/us-core-ethnicity",
+            "extension": [
+              {
+                "url": "text",
+                "valueString": "White Irish"
+              }
+            ]
+          },
+          {
+            "url": "http://hl7.org/fhir/us/odh/StructureDefinition/odh-UsualWork",
+            "valueString": "Retired fisherman"
+          }
+        ]
+      }
+    }
+  ]
+}

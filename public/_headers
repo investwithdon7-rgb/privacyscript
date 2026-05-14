@@ -1,0 +1,26 @@
+# Cloudflare Pages security headers.
+# Applies to every response served by privacyscript.pages.dev (and, by the
+# router, tekdruid.com/privacyscript).
+
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
+  Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+
+  # CSP — strict by default. The only external origin allowed is huggingface.co
+  # and cdn-lfs.huggingface.co, which is required to download the NER model on
+  # first use. The model is then cached in IndexedDB and never re-fetched.
+  # See README "Network Policy".
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://huggingface.co https://cdn-lfs.huggingface.co; worker-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'
+
+# Assets are immutable — hash-prefixed by Next. One year is safe.
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/pdf.worker.min.mjs
+  Cache-Control: public, max-age=31536000, immutable

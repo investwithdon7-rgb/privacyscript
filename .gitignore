@@ -1,0 +1,14 @@
+node_modules/
+.next/
+out/
+dist/
+.env*
+!.env.local.example
+*.log
+.DS_Store
+public/models/*.onnx
+public/pdf.worker.min.mjs
+.cache/
+.wrangler/
+tsconfig.tsbuildinfo
+*.zip

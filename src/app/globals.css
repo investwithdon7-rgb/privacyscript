@@ -1,0 +1,113 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-primary: #4F46E5;
+  --color-bg: #0A0B14;
+  --color-surface: #0F172A;
+  --color-surface-2: #1E293B;
+  --color-border: #334155;
+  --color-text: #FFFFFF;
+  --color-muted: #94A3B8;
+  --color-success: #10B981;
+  --color-warning: #F59E0B;
+  --color-danger: #EF4444;
+}
+
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-dm-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+::selection {
+  background: var(--color-primary);
+  color: white;
+}
+
+.mono {
+  font-family: var(--font-dm-mono), ui-monospace, monospace;
+}
+
+.surface {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+}
+
+.surface-2 {
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+}
+
+.btn-primary {
+  background: var(--color-primary);
+  color: white;
+  border-radius: 9999px;
+  padding: 0.75rem 1.75rem;
+  font-weight: 600;
+  transition: filter 120ms ease;
+}
+
+.btn-primary:hover {
+  filter: brightness(1.1);
+}
+
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background: transparent;
+  color: white;
+  border: 1px solid var(--color-border);
+  border-radius: 9999px;
+  padding: 0.75rem 1.75rem;
+  font-weight: 500;
+  transition: background 120ms ease;
+}
+
+.btn-secondary:hover {
+  background: var(--color-surface-2);
+}
+
+.tag {
+  font-family: var(--font-dm-mono), ui-monospace, monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  padding: 0.25rem 0.6rem;
+  border-radius: 9999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-2);
+}
+
+.identifier-highlight {
+  background: rgba(79, 70, 229, 0.25);
+  border-bottom: 1px solid var(--color-primary);
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted);
+}

@@ -1,0 +1,16 @@
+# Cloudflare Worker that proxies tekdruid.com/privacyscript* to Pages.
+# See cloudflare/worker/src/worker.js for the routing logic.
+
+name = "tekdruid-privacyscript-router"
+main = "src/worker.js"
+compatibility_date = "2026-05-12"
+
+# Route binding. Activate this worker on every request that hits the prefix.
+# Other tekdruid.com paths bypass the worker and hit Bluehost as normal.
+[[routes]]
+pattern = "tekdruid.com/privacyscript*"
+zone_name = "tekdruid.com"
+
+# Deploy:
+#   cd cloudflare/worker
+#   npx wrangler deploy

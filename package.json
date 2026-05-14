@@ -1,0 +1,39 @@
+{
+  "name": "privacyscript",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PrivacyScript by TekDruid — client-side health record de-identification.",
+  "scripts": {
+    "dev": "node scripts/copy-pdf-worker.js && next dev",
+    "build": "node scripts/copy-pdf-worker.js && next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "postinstall": "node scripts/copy-pdf-worker.js"
+  },
+  "dependencies": {
+    "@types/papaparse": "^5.3.14",
+    "@xenova/transformers": "^2.17.2",
+    "docx": "^8.5.0",
+    "mammoth": "^1.8.0",
+    "next": "14.2.15",
+    "papaparse": "^5.4.1",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^4.7.76",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tesseract.js": "^5.1.1"
+  },
+  "devDependencies": {
+    "@peculiar/webcrypto": "^1.7.1",
+    "@types/node": "20.14.0",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "autoprefixer": "10.4.19",
+    "postcss": "8.4.38",
+    "tailwindcss": "3.4.4",
+    "typescript": "5.5.3",
+    "vitest": "1.6.0"
+  }
+}
