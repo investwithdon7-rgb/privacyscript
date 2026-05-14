@@ -132,22 +132,51 @@ export default {
       }
     }
 
-    // ── 9. Strip Cloudflare analytics beacon if edge-injected ────────────────
-    // Cloudflare may inject a <script src="...cloudflareinsights.com/...">
-    // tag at the zone level.  The CSP already blocks it from executing, but
-    // its presence triggers console violations and leaks infrastructure info.
-    // We proactively remove it from HTML responses here so it never reaches
-    // the browser at all — regardless of zone-level analytics settings.
+    // ── 9. HTML transforms: nonce injection + beacon removal ─────────────────
+    //
+    // Next.js App Router emits inline <script> tags to deliver RSC hydration
+    // data (self.__next_f.push(…)).  Our strict script-src blocks ALL inline
+    // scripts by default, which prevents React from hydrating — making every
+    // button unclickable.
+    //
+    // Fix: generate a cryptographically random nonce per request, add it to
+    // every inline script tag, and add 'nonce-{nonce}' to the script-src
+    // directive in the CSP header.  External scripts (those with src=) are
+    // still covered by 'self'; the nonce only extends to inline scripts.
+    //
+    // We also remove any Cloudflare analytics beacon injected at zone level
+    // (belt-and-braces — our updated CSP already blocks it via nonce mismatch,
+    // but removing the tag prevents browser console violations).
     const ct = out.get('Content-Type') ?? '';
     if (ct.includes('text/html')) {
       const body = await resp.text();
-      const cleaned = body
-        // Self-closing variant: <script ... cloudflareinsights ... />
-        .replace(/<script\b[^>]*cloudflareinsights[^>]*\/>/gi, '')
-        // Paired variant: <script ... cloudflareinsights ...></script>
-        .replace(/<script\b[^>]*cloudflareinsights[^>]*>[\s\S]*?<\/script>/gi, '');
 
-      return new Response(cleaned, {
+      // Generate a secure 128-bit nonce for this response.
+      const nonceBytes = crypto.getRandomValues(new Uint8Array(16));
+      const nonce = btoa(String.fromCharCode(...nonceBytes));
+
+      const transformed = body
+        // Remove Cloudflare analytics beacon (self-closing variant)
+        .replace(/<script\b[^>]*cloudflareinsights[^>]*\/>/gi, '')
+        // Remove Cloudflare analytics beacon (paired variant)
+        .replace(/<script\b[^>]*cloudflareinsights[^>]*>[\s\S]*?<\/script>/gi, '')
+        // Inject nonce into every INLINE script tag (those without src=).
+        // Captures all existing attributes so they are preserved.
+        .replace(
+          /<script\b((?![^>]*\bsrc=)[^>]*)>/gi,
+          (_, attrs) => `<script${attrs} nonce="${nonce}">`
+        );
+
+      // Update the Content-Security-Policy header to permit the nonce.
+      // The directive already contains  script-src 'self' 'wasm-unsafe-eval';
+      // we insert the nonce alongside those.
+      const csp = out.get('Content-Security-Policy') ?? '';
+      out.set(
+        'Content-Security-Policy',
+        csp.replace(/\bscript-src\b/, `script-src 'nonce-${nonce}'`)
+      );
+
+      return new Response(transformed, {
         status:     resp.status,
         statusText: resp.statusText,
         headers:    out,
