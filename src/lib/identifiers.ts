@@ -31,6 +31,7 @@ export type IdentifierLabel =
   | 'LICENSE'
   | 'VEHICLE_VIN'
   | 'DEVICE_ID'
+  | 'REFERENCE_ID'    // HIPAA #18 — any other unique identifying number/code
   | 'URL'
   | 'IP'
   | 'BIOMETRIC'
@@ -107,9 +108,10 @@ const LICENSE_PATTERN =
 // VIN: 17-char, no I/O/Q.
 const VIN_PATTERN = /\b[A-HJ-NPR-Z0-9]{17}\b/g;
 
-// Device identifier — labelled context (serial number / device ID).
+// Device identifier — labelled context (serial number / device ID / bleep).
+// Bleep codes are typically 4 digits; {2,30} covers that and longer device serials.
 const DEVICE_PATTERN =
-  /\b(?:device\s+(?:id|no|number|#|serial)|serial\s+(?:no|number|#)|UDI)\s*[:.\-#]?\s*([A-Z0-9\-]{4,30})/gi;
+  /\b(?:device\s+(?:id|no|number|#|serial)|serial\s+(?:no|number|#)|UDI|bleep|pager\s*(?:no|number)?)\s*[:.\-#]?\s*([A-Z0-9\-]{2,30})/gi;
 
 const URL_PATTERN =
   /\bhttps?:\/\/[^\s<>"]+|\bwww\.[A-Z0-9.\-]+\.[A-Z]{2,}(?:\/[^\s<>"]*)?/gi;
@@ -181,8 +183,11 @@ const PASSPORT_PATTERN =
 // references against a prevalence list to decide whether to flag.
 const ICD10_PATTERN = /\b[A-TV-Z][0-9][A-Z0-9](?:\.[A-Z0-9]{1,4})?\b/g;
 
+// INSTITUTION_PATTERN — matches treating-institution names.
+// "General" requires "Hospital" to follow; standalone "General" is too broad
+// and false-positives on "General Medicine / Cardiology" specialty strings.
 const INSTITUTION_PATTERN =
-  /\b(?:[A-Z][a-z]+\s+){0,4}(?:Hospitals?|Clinic|Medical\s+Centers?|Medical\s+Centres?|Infirmary|NHS\s+(?:Trust|Greater\s+\w+(?:\s+and\s+\w+)?|Lothian|Borders)|Health(?:\s+(?:System|Network|Trust))?|Healthcare|Memorial|UMC|University\s+Medical\s+Center|Universit(?:ätsmedizin|y\s+Hospitals?)|Charit[éeè]|General(?:\s+Hospital)?)\b/g;
+  /\b(?:[A-Z][a-z]+\s+){0,4}(?:Hospitals?|Clinic|Medical\s+Centers?|Medical\s+Centres?|Infirmary|NHS\s+(?:Trust|Greater\s+\w+(?:\s+and\s+\w+)?|Lothian|Borders)|Health(?:\s+(?:System|Network|Trust))?|Healthcare|Memorial|UMC|University\s+Medical\s+Center|Universit(?:ätsmedizin|y\s+Hospitals?)|Charit[éeè]|General\s+Hospital)\b/g;
 
 const ETHNICITY_PATTERN =
   /\b(?:White|Black|Asian|Hispanic|Latino|Latina|Latinx|Caucasian|African[\s\-]?American|Native[\s\-]?American|Pacific[\s\-]?Islander|Mixed[\s\-]?race|Arab|Indigenous)\b/gi;
@@ -194,6 +199,59 @@ const OCCUPATION_PATTERN =
 // matching unrelated 2-3 digit numbers (postcodes, ICD codes, lab values).
 const AGE_OVER_89_PATTERN =
   /\b(?:age(?:d)?\s*[:.\-]?\s*(\d{2,3})|(\d{2,3})\s*(?:y\.?o\.?\b|years?\s+old\b|years?\s+of\s+age\b))/gi;
+
+/* ----------------------------------------------------------------------------
+ * UK / EU clinical professional registration numbers
+ * --------------------------------------------------------------------------*/
+
+// GMC (General Medical Council), NMC (Nursing), GDC (Dental), HCPC, etc.
+// Matches "GMC: 6184472", "NMC pin: 12A3456B", "HCPC 09012345" etc.
+// Registered as LICENSE (HIPAA #11 — certificate / licence number).
+const REGISTRATION_PATTERN =
+  /\b(?:GMC|NMC|GDC|HCPC|GPhC|GOC|GOsC)\s*(?:pin\s*#?|no\.?|number|reg\.?)?\s*[:.\-#]?\s*([A-Z0-9\-]{5,12})\b/gi;
+
+/* ----------------------------------------------------------------------------
+ * Trust / document / referral reference codes  (HIPAA #18)
+ * --------------------------------------------------------------------------*/
+
+// Matches labelled reference codes: "Trust Reference: NWGH-DSC-2024-118429",
+// "Document ID: DS-7724831-A", "reference WHR-CR-2024-0331".
+// Code shape: 2-6 uppercase letters + digit-or-hyphen + alphanumeric tail.
+const REFERENCE_PATTERN =
+  /\b(?:trust\s+ref(?:erence)?|document\s+(?:id|ref(?:erence)?|no\.?)|referral\s+(?:ref(?:erence)?|no|code)|record\s+(?:ref|id|no)|ref(?:erence)?)\s*[:.\-#]?\s*([A-Z]{2,6}[0-9\-][A-Z0-9\-\.\/]{3,35})\b/gi;
+
+/* ----------------------------------------------------------------------------
+ * Context-anchored name detection  (NER fallback)
+ *
+ * Names are the #1 HIPAA identifier but cannot be reliably detected by a
+ * content-agnostic regex alone. These patterns use strong contextual anchors
+ * (honorifics, professional credentials, labelled fields, staff-role keywords)
+ * to catch names in clearly-structured positions with a low false-positive rate.
+ *
+ * When the NER model is loaded it produces higher-confidence PER spans that
+ * win any overlap through the priority merge. These patterns are an essential
+ * fallback for the first-load case where the NER model has not yet downloaded.
+ * --------------------------------------------------------------------------*/
+
+// 1. Honorific prefix: "Dr Marcus Holloway", "Mrs Achterberg", "Prof Singh".
+//    Capture group = name only (honorific is not part of the identifier).
+const NAME_HONORIFIC_PATTERN =
+  /\b(?:Dr\.?|Prof\.?|Mr\.?|Mrs\.?|Ms\.?|Miss|Sister)\s+([A-Z][A-Za-z\-']{1,30}(?:\s+[A-Z][A-Za-z\-']{1,30}){0,2})\b/g;
+
+// 2. Professional credential suffix: "Bernadette Aikens, RN" / "Holloway, FRCP".
+//    Capture = name before the comma; credentials left intact.
+const NAME_CREDENTIAL_PATTERN =
+  /\b([A-Z][A-Za-z\-']{1,30}(?:\s+[A-Z][A-Za-z\-']{1,30}){1,3})\s*,\s*(?:FRCP(?:E|CH)?|MRCP(?:CH)?|FRCPsych|MRCPsych|FRCGP|MRCGP|FRCS|FRCR|FRCOG|RN|RGN|MBChB|MBBS)\b/g;
+
+// 3. Labelled name field: "Patient name: Eveline Achterberg", "Next of kin: Pieter…",
+//    "Completed by: Dr Priya Iyer", "On behalf of: Dr Marcus Holloway".
+const NAME_FIELD_PATTERN =
+  /\b(?:patient(?:'s)?\s+name|name\s+of\s+patient|next\s+of\s+kin|completed\s+by|on\s+behalf\s+of|signed\s+by)\s*[:=\-]?\s*(?:Dr\.?\s+|Prof\.?\s+)?([A-Z][A-Za-z\-']{1,30}(?:\s+[A-Z][A-Za-z\-']{1,30}){1,3})/gi;
+
+// 4. Clinical staff role + name: "specialist nurse Karoline Stenberg",
+//    "Caldicott Guardian: Dr Faisal Rehman".
+const NAME_STAFF_ROLE_PATTERN =
+  /\b(?:specialist\s+nurse|heart\s+failure\s+nurse|clinical\s+nurse|charge\s+nurse|ward\s+sister|caldicott\s+guardian|named\s+nurse|clinical\s+lead)\s*[:.\-]?\s*(?:Dr\.?\s+)?([A-Z][A-Za-z\-']{1,30}(?:\s+[A-Z][A-Za-z\-']{1,30}){0,2})\b/gi;
 
 /* ----------------------------------------------------------------------------
  * Rule list
@@ -225,8 +283,10 @@ export const IDENTIFIER_RULES: IdentifierRule[] = [
   { label: 'INSURANCE_ID', category: 'HIPAA', description: 'Health plan beneficiary number', pattern: INSURANCE_PATTERN, priority: 92 },
   { label: 'ACCOUNT_NUMBER', category: 'HIPAA', description: 'Account number', pattern: ACCOUNT_PATTERN, priority: 88 },
   { label: 'LICENSE', category: 'HIPAA', description: 'Certificate or licence number', pattern: LICENSE_PATTERN, priority: 88 },
-  { label: 'DEVICE_ID', category: 'HIPAA', description: 'Device identifier / serial', pattern: DEVICE_PATTERN, priority: 88 },
+  { label: 'LICENSE', category: 'HIPAA', description: 'UK/EU professional registration number (GMC, NMC, GDC, HCPC…)', pattern: REGISTRATION_PATTERN, priority: 92 },
+  { label: 'DEVICE_ID', category: 'HIPAA', description: 'Device identifier / serial / bleep', pattern: DEVICE_PATTERN, priority: 88 },
   { label: 'VEHICLE_VIN', category: 'HIPAA', description: 'Vehicle VIN', pattern: VIN_PATTERN, priority: 85 },
+  { label: 'REFERENCE_ID', category: 'HIPAA', description: 'Trust / document / referral reference code', pattern: REFERENCE_PATTERN, priority: 87 },
 
   // Geography
   { label: 'POSTCODE_UK', category: 'EU', description: 'UK postcode', pattern: UK_POSTCODE_PATTERN, priority: 85 },
@@ -237,6 +297,14 @@ export const IDENTIFIER_RULES: IdentifierRule[] = [
   // Dates and biometric — DATE > PHONE so ISO dates don't get mislabelled.
   { label: 'DATE', category: 'HIPAA', description: 'Date', pattern: DATE_PATTERN, priority: 82 },
   { label: 'BIOMETRIC', category: 'HIPAA', description: 'Biometric descriptor', pattern: BIOMETRIC_PATTERN, priority: 70 },
+
+  // Context-anchored name detection (NER fallback — see comments above).
+  // Priority 83-86 puts these below structured-code rules (88-92) but well
+  // above quasi-identifiers (30-55), so they are not shadowed by date/phone spans.
+  { label: 'NAME', category: 'HIPAA', description: 'Name (honorific context: Dr, Mrs, Prof…)', pattern: NAME_HONORIFIC_PATTERN, priority: 86 },
+  { label: 'NAME', category: 'HIPAA', description: 'Name (labelled field: patient name, next of kin…)', pattern: NAME_FIELD_PATTERN, priority: 85 },
+  { label: 'NAME', category: 'HIPAA', description: 'Name (professional credential suffix: FRCP, RN…)', pattern: NAME_CREDENTIAL_PATTERN, priority: 84 },
+  { label: 'NAME', category: 'HIPAA', description: 'Name (clinical staff role context: specialist nurse, Caldicott Guardian…)', pattern: NAME_STAFF_ROLE_PATTERN, priority: 83 },
 
   // Quasi-identifiers (flagged, not auto-redacted by default)
   { label: 'RARE_DISEASE_ICD', category: 'QUASI', description: 'ICD-10 code (review for rare disease)', pattern: ICD10_PATTERN, priority: 40 },

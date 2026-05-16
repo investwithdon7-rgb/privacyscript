@@ -265,6 +265,8 @@ function anonymise(label: IdentifierLabel, token: string): string {
       return '[VIN]';
     case 'DEVICE_ID':
       return '[DEVICE]';
+    case 'REFERENCE_ID':
+      return '[REF-ID]';
     case 'ADDRESS_LINE':
       return '[ADDRESS]';
     case 'BIOMETRIC':
