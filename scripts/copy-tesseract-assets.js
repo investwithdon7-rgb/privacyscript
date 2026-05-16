@@ -36,48 +36,59 @@
  * public/_headers). It is not copied here because it is >10 MB and not
  * available in the npm package.
  *
- * POST-COPY PATCHES (applied after each file is copied)
- * -----------------------------------------------------
- * The tesseract-core-*.wasm.js files are Emscripten SINGLE_FILE builds: they
- * have the WASM binary inlined as a base64 data URI and load it via fetch().
- * This breaks under our CSP in two independent ways:
+ * POST-COPY PATCH: strip the inlined WASM data URI
+ * -------------------------------------------------
+ * The tesseract-core-*.wasm.js files are Emscripten SINGLE_FILE builds.
+ * They inline the entire WASM binary (~2.8–3.4 MB) as a base64 data URI and
+ * fetch it at runtime. This fails in two independent ways:
  *
- *   1. connect-src must include data: (we have this, but…)
- *   2. COEP require-corp blocks fetch() of data: URIs because they have an
- *      opaque origin and cannot carry Cross-Origin-Resource-Policy headers.
+ *   1. connect-src must allow data: (we do allow it, but…)
+ *   2. COEP require-corp blocks fetch() of data: URIs: they have opaque
+ *      origins and cannot carry Cross-Origin-Resource-Policy headers.
  *
- * The clean fix: strip the base64 inline from Ka so the Emscripten loader
- * resolves the binary from a real same-origin URL instead.
+ * Fix: replace Ka/La = "data:application/octet-stream;base64,<4MB>"
+ *      with  Ka/La = "<basePath>/tesseract/<filename>.wasm"
  *
- * Emscripten's path-resolution logic (in the WASM loader) is:
+ * Emscripten's path-resolution code is:
  *
  *   if (!Ka.startsWith("data:application/octet-stream;base64,")) {
  *     Ka = b.locateFile ? b.locateFile(Ka, f) : f + Ka;
  *   }
  *
- * When running inside a blob: Worker, Emscripten sets f="" (it sees the
- * blob: prefix and resets the script-directory to empty). The Tesseract.js
- * worker does NOT pass locateFile in the module init options. So the fallback
- * f + Ka = "" + "<filename>.wasm" = "<filename>.wasm" (a relative URL).
+ * Inside a blob: Worker, _scriptDir is a LOCAL closure var (set by the IIFE
+ * that wraps the module at importScripts load time). At that moment document
+ * is undefined and __filename doesn't exist in a browser Worker, so _scriptDir
+ * stays undefined. Emscripten then falls back to self.location.href (the blob:
+ * URL), sees the "blob:" prefix, and resets f = "". Tesseract.js does not pass
+ * locateFile. So the resolution is: Ka = "" + Ka = Ka (unchanged).
  *
- * To make relative resolution work we also patch worker.min.js: right before
- * importScripts(h) we inject `self._scriptDir = h.replace(/[^\/]*$/, "");`.
- * Emscripten checks _scriptDir first and uses it as f, so f becomes the
- * full directory path of the .wasm.js file (e.g. /privacyscript/tesseract/).
- * That makes f + Ka resolve to the correct absolute same-origin .wasm URL.
+ * Solution: set Ka/La to the FULL absolute root-relative path at patch time:
+ *   Ka = "/privacyscript/tesseract/tesseract-core-simd-lstm.wasm"
+ *
+ * f + Ka = "" + "/privacyscript/tesseract/filename.wasm"
+ *        = "/privacyscript/tesseract/filename.wasm"   ← root-relative, valid URL
+ *
+ * Chrome resolves root-relative URLs against the document origin in blob Workers,
+ * so fetch("/privacyscript/tesseract/filename.wasm") resolves to the correct
+ * same-origin URL. Files shrink from ~3.8–4.6 MB to ~122 KB after stripping.
+ *
+ * BASEPATH: read from NEXT_PUBLIC_BASE_PATH env var (defaults to /privacyscript,
+ * matching next.config.js).
  */
 
-const fs   = require('node:fs');
-const path = require('node:path');
+const fs       = require('node:fs');
+const path     = require('node:path');
+
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '/privacyscript';
 
 const workerSrc  = path.join(__dirname, '..', 'node_modules', 'tesseract.js', 'dist');
 const coreSrc    = path.join(__dirname, '..', 'node_modules', 'tesseract.js-core');
 const destDir    = path.join(__dirname, '..', 'public', 'tesseract');
 
 const FILES = [
-  // Worker bootstrap
+  // Worker bootstrap — no patch needed
   { src: path.join(workerSrc, 'worker.min.js'),                       dest: 'worker.min.js' },
-  // Core WASM + JS loaders — all four variants
+  // Core WASM + JS loaders — all four variants (wasmFile triggers the patch)
   { src: path.join(coreSrc, 'tesseract-core-simd-lstm.wasm.js'),      dest: 'tesseract-core-simd-lstm.wasm.js', wasmFile: 'tesseract-core-simd-lstm.wasm' },
   { src: path.join(coreSrc, 'tesseract-core-simd-lstm.wasm'),         dest: 'tesseract-core-simd-lstm.wasm' },
   { src: path.join(coreSrc, 'tesseract-core-lstm.wasm.js'),           dest: 'tesseract-core-lstm.wasm.js',      wasmFile: 'tesseract-core-lstm.wasm' },
@@ -108,22 +119,19 @@ for (const { src, dest, wasmFile } of FILES) {
   console.log(`[copy-tesseract-assets] ${dest}  (${kb} KB)`);
   copied++;
 
-  // ── Patch 1: strip the inlined WASM data URI from core loader files ────────
-  // Each tesseract-core-*.wasm.js has the WASM binary inlined as a base64 data
-  // URI in the variable Ka. We replace it with just the filename so the
-  // Emscripten loader resolves it as a real URL (f + Ka) rather than fetching
-  // a data: URI that COEP blocks.
+  // ── Patch: replace inline WASM data URI with absolute root-relative path ───
+  // SIMD+LSTM / LSTM variants use Ka for the binary; SIMD / baseline use La.
+  // We replace the entire base64 blob with the absolute URL to the .wasm file.
   if (wasmFile) {
+    const absoluteWasmPath = `${basePath}/tesseract/${wasmFile}`;
     let content = fs.readFileSync(destPath, 'utf8');
-    const before = content.length;
-    // SIMD+LSTM and LSTM variants store the binary in Ka;
-    // SIMD-only and baseline variants store it in La.
-    // Try Ka first, then La.
     let patchedVar = null;
     for (const varName of ['Ka', 'La']) {
-      const re = new RegExp(`${varName}\\s*=\\s*"data:application\\/octet-stream;base64,[A-Za-z0-9+/=]+"`);
+      const re = new RegExp(
+        `${varName}\\s*=\\s*"data:application\\/octet-stream;base64,[A-Za-z0-9+/=]+"`
+      );
       if (re.test(content)) {
-        content = content.replace(re, `${varName}="${wasmFile}"`);
+        content = content.replace(re, `${varName}="${absoluteWasmPath}"`);
         patchedVar = varName;
         break;
       }
@@ -131,33 +139,13 @@ for (const { src, dest, wasmFile } of FILES) {
     if (patchedVar) {
       fs.writeFileSync(destPath, content, 'utf8');
       const kbAfter = Math.round(fs.statSync(destPath).size / 1024);
-      console.log(`[copy-tesseract-assets]   patched ${patchedVar} → "${wasmFile}"  (${kbAfter} KB after strip)`);
+      console.log(`[copy-tesseract-assets]   patched ${patchedVar} → "${absoluteWasmPath}"  (${kbAfter} KB after strip)`);
       patched++;
     } else {
-      console.warn(`[copy-tesseract-assets]   WARNING: Ka/La data-URI pattern not found in ${dest} — patch skipped`);
-    }
-  }
-
-  // ── Patch 2: inject _scriptDir into worker.min.js before importScripts ─────
-  // Emscripten reads self._scriptDir (if set) to determine the base directory
-  // for resolving the .wasm binary. In a blob: Worker the normal detection sets
-  // f="" (empty), so we must set _scriptDir to the core file's directory just
-  // before importScripts(h) runs, giving Emscripten the right base path.
-  if (dest === 'worker.min.js') {
-    let content = fs.readFileSync(destPath, 'utf8');
-    const needle = 'r.g.importScripts(h),void 0!==r.g.TesseractCore';
-    // Use comma (,) not semicolon (;) — the importScripts call is inside
-    // an if() condition (a comma expression), so we must stay as an expression.
-    const replacement = '(r.g._scriptDir=h.replace(/[^/]*$/,"")),r.g.importScripts(h),void 0!==r.g.TesseractCore';
-    if (content.includes(needle)) {
-      content = content.replace(needle, replacement);
-      fs.writeFileSync(destPath, content, 'utf8');
-      console.log('[copy-tesseract-assets]   patched worker.min.js → injected _scriptDir before importScripts');
-      patched++;
-    } else {
-      console.warn('[copy-tesseract-assets]   WARNING: importScripts needle not found in worker.min.js — patch skipped');
+      console.warn(`[copy-tesseract-assets]   WARNING: Ka/La data-URI not found in ${dest} — patch skipped`);
     }
   }
 }
 
 console.log(`[copy-tesseract-assets] done — ${copied}/${FILES.length} files copied, ${patched} patched (public/tesseract/)`);
+console.log(`[copy-tesseract-assets] basePath="${basePath}" (override with NEXT_PUBLIC_BASE_PATH)`);
