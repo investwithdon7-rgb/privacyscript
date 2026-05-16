@@ -146,7 +146,9 @@ for (const { src, dest, wasmFile } of FILES) {
   if (dest === 'worker.min.js') {
     let content = fs.readFileSync(destPath, 'utf8');
     const needle = 'r.g.importScripts(h),void 0!==r.g.TesseractCore';
-    const replacement = 'r.g._scriptDir=h.replace(/[^/]*$/,"");r.g.importScripts(h),void 0!==r.g.TesseractCore';
+    // Use comma (,) not semicolon (;) — the importScripts call is inside
+    // an if() condition (a comma expression), so we must stay as an expression.
+    const replacement = '(r.g._scriptDir=h.replace(/[^/]*$/,"")),r.g.importScripts(h),void 0!==r.g.TesseractCore';
     if (content.includes(needle)) {
       content = content.replace(needle, replacement);
       fs.writeFileSync(destPath, content, 'utf8');
