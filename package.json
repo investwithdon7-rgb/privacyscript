@@ -4,13 +4,13 @@
   "private": true,
   "description": "PrivacyScript by TekDruid — client-side health record de-identification.",
   "scripts": {
-    "dev": "node scripts/copy-pdf-worker.js && next dev",
-    "build": "node scripts/copy-pdf-worker.js && next build",
+    "dev": "node scripts/copy-pdf-worker.js && node scripts/copy-ort-wasm.js && node scripts/copy-tesseract-assets.js && next dev",
+    "build": "node scripts/copy-pdf-worker.js && node scripts/copy-ort-wasm.js && node scripts/copy-tesseract-assets.js && next build",
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
     "test:watch": "vitest",
-    "postinstall": "node scripts/copy-pdf-worker.js"
+    "postinstall": "node scripts/copy-pdf-worker.js && node scripts/copy-ort-wasm.js && node scripts/copy-tesseract-assets.js"
   },
   "dependencies": {
     "@types/papaparse": "^5.3.14",

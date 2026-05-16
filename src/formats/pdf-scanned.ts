@@ -30,6 +30,7 @@
  */
 
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import { asset } from '@/lib/assets';
 
 export interface ScannedPdfWord {
   text: string;
@@ -88,6 +89,20 @@ export async function ingestScannedPdf(
     pdfjs.GlobalWorkerOptions.workerSrc = asset('/pdf.worker.min.mjs');
   }
 
+  // Self-hosted Tesseract asset paths — required to satisfy the nonce-based CSP.
+  //
+  // Tesseract.js creates a blob: Worker and from within it calls importScripts()
+  // twice: once for worker.min.js (workerPath) and once for the matching
+  // tesseract-core-*.wasm.js (corePath + variant name). Both importScripts()
+  // calls are governed by script-src; loading from cdn.jsdelivr.net would be
+  // blocked. scripts/copy-tesseract-assets.js copies all required files into
+  // public/tesseract/ at build time so every call is same-origin.
+  //
+  // Language data (.traineddata) is still fetched from cdn.jsdelivr.net on first
+  // use (connect-src permits it) and cached in IndexedDB thereafter.
+  const tesseractWorkerPath = asset('/tesseract/worker.min.js');
+  const tesseractCorePath   = asset('/tesseract/');
+
   // pdfjs-dist transfers the typed-array's buffer to its worker via postMessage,
   // detaching the original. Slice a copy so pdfjs transfers the clone while
   // `bytes` stays intact for pdf-lib reconstruction in reconstructScannedPdf.
@@ -112,6 +127,9 @@ export async function ingestScannedPdf(
   const pool = await Promise.all(
     Array.from({ length: concurrency }, () =>
       Tesseract.createWorker('eng', undefined, {
+        // Self-hosted paths so importScripts() satisfies the script-src CSP.
+        workerPath: tesseractWorkerPath,
+        corePath:   tesseractCorePath,
         logger: () => {
           // No logger — we drive progress per-page instead.
         },
