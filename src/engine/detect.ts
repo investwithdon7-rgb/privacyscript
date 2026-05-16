@@ -47,7 +47,14 @@ export function runRules(text: string): Span[] {
       // alternate between capture groups (e.g. AGE_OVER_89 has both
       // "age: X" and "X years old" forms) — pick the first non-undefined.
       const capture = m.slice(1).find((g) => g !== undefined);
-      const captureIdx = capture ? m[0].indexOf(capture) : -1;
+      // captureIdx: find the capture within the full match string. If the same
+      // substring appears twice in m[0] this picks the first occurrence, which
+      // is correct for all current patterns (captures always appear at the end:
+      // "MRN: 12345" → 12345, "age 99 years" → 99). lastIndexOf is used as a
+      // tiebreaker-safe fallback for patterns where the capture trails the match.
+      const captureIdx = capture
+        ? (m[0].lastIndexOf(capture) >= 0 ? m[0].lastIndexOf(capture) : m[0].indexOf(capture))
+        : -1;
       const captureStart =
         capture && captureIdx >= 0 ? m.index + captureIdx : undefined;
       const captureEnd =
@@ -100,9 +107,17 @@ export function mergeSpans(spans: Span[]): Span[] {
       merged.push(s);
       continue;
     }
-    // Overlap — decide which to keep.
+    // Overlap — pick the higher-priority span as the label/source winner but
+    // expand the redaction region to the UNION of both spans so no PII falls
+    // in the gap between them (e.g. "John Smith" where "John" and "Smith" are
+    // detected by different rules with slightly different boundaries).
     const winner = pickWinner(last, s);
-    merged[merged.length - 1] = winner;
+    merged[merged.length - 1] = {
+      ...winner,
+      start: Math.min(last.start, s.start),
+      end:   Math.max(last.end,   s.end),
+      text:  winner.text, // keep winner's label text; full span text is recomputed from source
+    };
   }
   return merged;
 }

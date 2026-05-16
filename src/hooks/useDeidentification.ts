@@ -35,11 +35,17 @@ export async function ingestAndDetect(file: File): Promise<void> {
     const format = detectInitialFormat(file);
 
     // Stage 1: INGEST
+    // Re-detect format now that we can read a content preview.
+    // (detectInitialFormat returns a fast extension-only guess so the process
+    //  page can render immediately; we confirm the real format here before
+    //  the switch.)
+    const confirmedFormat = await confirmFormat(file, format);
+
     let text: string;
     let parsedOriginal: unknown = null;
     let sourceBytes: ArrayBuffer | null = null;
 
-    switch (format) {
+    switch (confirmedFormat) {
       case 'FHIR_R4': {
         const raw = await readFileAsText(file);
         const { resource, leaves } = parseFhir(raw);
@@ -71,15 +77,20 @@ export async function ingestAndDetect(file: File): Promise<void> {
         const { ingestPdf } = await import('@/formats/pdf-typed');
         const typedResult = await ingestPdf(sourceBytes);
 
-        // Heuristic: scanned PDFs return very little text per page. Average
-        // < 60 chars / page is the threshold to fall through to OCR.
+        // Heuristic: scanned PDFs return very little text per page.
+        // A document is treated as scanned only when BOTH:
+        //   - average chars/page < 60  (almost no text layer on average)
+        //   - max chars on any single page < 120 (no page has meaningful text)
+        // Without the maxPerPage guard a mixed document (cover page with a title
+        // + pure-scan pages) would incorrectly fall through to OCR.
+        const textLengths = typedResult.pages.map((p) => p.text.trim().length);
         const avgPerPage =
           typedResult.pages.length === 0
             ? 0
-            : typedResult.pages.reduce((s, p) => s + p.text.trim().length, 0) /
-              typedResult.pages.length;
+            : textLengths.reduce((s, l) => s + l, 0) / typedResult.pages.length;
+        const maxPerPage = textLengths.reduce((m, l) => Math.max(m, l), 0);
 
-        if (avgPerPage < 60) {
+        if (avgPerPage < 60 && maxPerPage < 120) {
           // Treat as scanned.
           const { ingestScannedPdf } = await import('@/formats/pdf-scanned');
           const onProg = (p: ScanProgress) => {
@@ -127,7 +138,7 @@ export async function ingestAndDetect(file: File): Promise<void> {
 
     updateSession({
       filename: file.name,
-      format,
+      format: confirmedFormat,
       originalText: text,
       originalSize: file.size,
       parsedOriginal,
@@ -156,12 +167,34 @@ export async function ingestAndDetect(file: File): Promise<void> {
   }
 }
 
+/**
+ * Fast extension-only guess — used to set the format on the process page
+ * immediately so the redirect guard doesn't fire. Binary formats (PDF, DOCX)
+ * are fully determined by extension; text formats need a content preview to
+ * distinguish FHIR vs HL7 vs plain text (see confirmFormat below).
+ */
 function detectInitialFormat(file: File): RecordFormat {
   const ext = file.name.split('.').pop()?.toLowerCase();
   if (ext === 'pdf') return 'PDF_TYPED';
   if (ext === 'docx') return 'DOCX';
-  // Text-based: sniff content for FHIR vs HL7 vs plain text.
-  return detectFormat(file.name, '');
+  if (ext === 'hl7') return 'HL7_V2';
+  if (ext === 'csv' || ext === 'tsv') return 'CSV';
+  // JSON and TXT/unknown: return TEXT as a placeholder; confirmFormat will
+  // upgrade to FHIR_R4 or HL7_V2 after reading the content preview.
+  return 'TEXT';
+}
+
+/**
+ * Read the first 4 KB of a text file and re-run format detection with real
+ * content. Returns the initial guess unchanged for binary formats.
+ */
+async function confirmFormat(file: File, initial: RecordFormat): Promise<RecordFormat> {
+  if (initial === 'PDF_TYPED' || initial === 'DOCX' || initial === 'CSV' || initial === 'HL7_V2') {
+    return initial;
+  }
+  // Read up to 4 KB for sniffing (avoids reading a potentially large file twice).
+  const preview = await file.slice(0, 4096).text();
+  return detectFormat(file.name, preview);
 }
 
 export async function finalise(): Promise<void> {
@@ -255,12 +288,13 @@ async function reconstructOutput(
     case 'FHIR_R4': {
       const parsed = s.parsedOriginal as {
         resource: unknown;
-        leaves: Array<{ path: string; value: string }>;
+        leaves: Array<{ path: string; value: string; referencePrefix?: string }>;
       };
       const parts = replacement.text.split(LEAF_DELIM);
       const replaced = parsed.leaves.map((leaf, i) => ({
         path: leaf.path,
         replacement: parts[i] ?? leaf.value,
+        referencePrefix: leaf.referencePrefix,
       }));
       return { textOutput: reconstructFhir(parsed.resource, replaced) };
     }

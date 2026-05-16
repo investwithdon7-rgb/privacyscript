@@ -170,39 +170,57 @@ export async function reconstructPdf(
       const endMap = ingestPage.charMap[endPage.offsetInPage];
       if (!startMap || !endMap) continue;
 
-      // Compute bounding rectangle across the items the span touches.
+      // Collect all items the span touches (may span multiple lines).
       const startItem = ingestPage.items[startMap.itemIdx];
-      const endItem = ingestPage.items[endMap.itemIdx];
-      if (!startItem || !endItem) continue;
+      if (!startItem) continue;
+      const touchedItems: PdfTextItem[] = [];
+      for (let ii = startMap.itemIdx; ii <= endMap.itemIdx; ii++) {
+        const item = ingestPage.items[ii];
+        if (item) touchedItems.push(item);
+      }
 
-      const x = startItem.transform[4];
-      const yBaseline = startItem.transform[5];
-      const height = startItem.height || endItem.height || 12;
+      // Group touched items by y-baseline (rounded to 1 pt) so we draw one
+      // rectangle per visual line. A naïve single rectangle fails when the span
+      // crosses a line break: endX < startX → negative width.
+      const lineMap = new Map<number, PdfTextItem[]>();
+      for (const item of touchedItems) {
+        const yKey = Math.round(item.transform[5]);
+        if (!lineMap.has(yKey)) lineMap.set(yKey, []);
+        lineMap.get(yKey)!.push(item);
+      }
+      // Sort lines top-to-bottom in PDF coords (higher y = higher on page).
+      const lines = [...lineMap.entries()].sort((a, b) => b[0] - a[0]);
 
-      // Right edge = end item's x + (width * fraction covered).
-      const endX = endItem.transform[4] + endItem.width;
-      const width = Math.max(20, endX - x);
+      lines.forEach(([, lineItems], lineNum) => {
+        const lx  = lineItems[0].transform[4];
+        const ly  = lineItems[0].transform[5];
+        const lh  = lineItems[0].height || 12;
+        const lastItem = lineItems[lineItems.length - 1];
+        const lw  = Math.max(20, lastItem.transform[4] + lastItem.width - lx);
 
-      // Redaction box.
-      pdfPage.drawRectangle({
-        x: x - 1,
-        y: yBaseline - 1,
-        width: width + 2,
-        height: height + 2,
-        color: rgb(0.93, 0.92, 0.99),
-        borderColor: rgb(0.31, 0.27, 0.9),
-        borderWidth: 0.5,
-      });
+        pdfPage.drawRectangle({
+          x: lx - 1,
+          y: ly - 1,
+          width: lw + 2,
+          height: lh + 2,
+          color: rgb(0.93, 0.92, 0.99),
+          borderColor: rgb(0.31, 0.27, 0.9),
+          borderWidth: 0.5,
+        });
 
-      // Replacement text on top.
-      const fontSize = Math.min(height * 0.85, 10);
-      pdfPage.drawText(r.replacement, {
-        x: x,
-        y: yBaseline + 1,
-        size: fontSize,
-        font: helv,
-        color: rgb(0.05, 0.05, 0.1),
-        maxWidth: width,
+        // Write replacement text only on the first (topmost) line so it isn't
+        // repeated across every line of a multi-line span.
+        if (lineNum === 0) {
+          const fontSize = Math.min(lh * 0.85, 10);
+          pdfPage.drawText(r.replacement, {
+            x: lx,
+            y: ly + 1,
+            size: fontSize,
+            font: helv,
+            color: rgb(0.05, 0.05, 0.1),
+            maxWidth: lw,
+          });
+        }
       });
     }
   }

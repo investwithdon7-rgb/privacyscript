@@ -70,11 +70,23 @@ function looksLikeFhir(content: string): boolean {
   return false;
 }
 
+/** 50 MB hard cap for text formats. Larger files would OOM the tab. */
+const MAX_TEXT_FILE_BYTES = 50 * 1024 * 1024;
+
 /**
  * Read a File object as text. Used for the text-based formats. Binary formats
  * are read via .arrayBuffer() in their own handlers.
+ *
+ * Throws a user-friendly error if the file exceeds MAX_TEXT_FILE_BYTES so the
+ * FileReader never attempts to load a multi-hundred-MB document into a JS string.
  */
 export async function readFileAsText(file: File): Promise<string> {
+  if (file.size > MAX_TEXT_FILE_BYTES) {
+    throw new Error(
+      `"${file.name}" is ${(file.size / 1_048_576).toFixed(1)} MB — ` +
+        `please keep text files under ${MAX_TEXT_FILE_BYTES / 1_048_576} MB.`
+    );
+  }
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result ?? ''));

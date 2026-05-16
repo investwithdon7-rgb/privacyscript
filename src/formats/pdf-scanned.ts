@@ -76,10 +76,15 @@ const CONFIDENCE_FLOOR = 80;
 /**
  * Render and OCR a scanned PDF. Returns the structured ingest and an abort
  * controller so the caller can cancel mid-flight.
+ *
+ * @param languages - Tesseract language code(s), e.g. "eng" or "eng+fra".
+ *   Defaults to English. Passed through to Tesseract.createWorker so the
+ *   caller can support multi-language documents without forking the pipeline.
  */
 export async function ingestScannedPdf(
   bytes: ArrayBuffer,
-  onProgress: (p: ScanProgress) => void
+  onProgress: (p: ScanProgress) => void,
+  languages = 'eng'
 ): Promise<{ result: ScannedPdfIngest; controller: ScanController }> {
   const pdfjs = await import('pdfjs-dist');
   const Tesseract = await import('tesseract.js');
@@ -109,9 +114,13 @@ export async function ingestScannedPdf(
   const loadingTask = pdfjs.getDocument({ data: new Uint8Array(bytes.slice(0)) });
   const pdf = await loadingTask.promise;
 
+  // Cap at 4 workers even on high-core machines: each worker loads a ~12 MB
+  // language pack and holds a WASM module in memory. Beyond 4, RAM pressure
+  // (especially on 8 GB devices) causes the tab to be killed before benefits
+  // of extra parallelism kick in.
   const concurrency = Math.max(
     1,
-    Math.min(pdf.numPages, (navigator.hardwareConcurrency ?? 4) - 1)
+    Math.min(pdf.numPages, Math.min(4, (navigator.hardwareConcurrency ?? 4) - 1))
   );
 
   let cancelled = false;
@@ -123,10 +132,10 @@ export async function ingestScannedPdf(
     },
   };
 
-  // Pool of workers; each loads English data once and is reused per page.
+  // Pool of workers; each loads the requested language data once and is reused per page.
   const pool = await Promise.all(
     Array.from({ length: concurrency }, () =>
-      Tesseract.createWorker('eng', undefined, {
+      Tesseract.createWorker(languages, undefined, {
         // Self-hosted paths so importScripts() satisfies the script-src CSP.
         workerPath: tesseractWorkerPath,
         corePath:   tesseractCorePath,
@@ -355,21 +364,24 @@ export async function reconstructScannedPdf(
 }
 
 function findBBoxForRange(page: ScannedPdfPage, r: ScannedRedaction) {
-  const replacement = page.text.slice();
-  // Locate the words that compose this character range.
+  const text = page.text;
   let cursor = 0;
   let union: { x0: number; y0: number; x1: number; y1: number } | null = null;
   for (const word of page.words) {
-    const wordStart = replacement.indexOf(word.text, cursor);
+    // Skip empty / whitespace-only tokens — Tesseract emits these between
+    // words. `indexOf('', cursor)` always returns cursor, causing alignment
+    // drift that shifts every subsequent word's bbox match.
+    const token = word.text.trim();
+    if (!token) continue;
+
+    const wordStart = text.indexOf(token, cursor);
     if (wordStart < 0) continue;
-    const wordEnd = wordStart + word.text.length;
+    const wordEnd = wordStart + token.length;
     cursor = wordEnd;
 
     // Translate r.start/r.end (which are page-text offsets via globalMap) to
     // overlap with this word's range.
-    const localStart = r.start;
-    const localEnd = r.end;
-    if (wordEnd <= localStart || wordStart >= localEnd) continue;
+    if (wordEnd <= r.start || wordStart >= r.end) continue;
     union = union
       ? {
           x0: Math.min(union.x0, word.bbox.x0),

@@ -35,7 +35,8 @@ export interface HL7Leaf {
   value: string;
 }
 
-const TARGET_SEGMENTS = new Set(['PID', 'PV1', 'IN1', 'IN2', 'NK1', 'GT1', 'NTE', 'OBX']);
+// AL1 = allergy/intolerance, DG1 = diagnosis, PR1 = procedure — all carry PHI.
+const TARGET_SEGMENTS = new Set(['PID', 'PV1', 'IN1', 'IN2', 'NK1', 'GT1', 'NTE', 'OBX', 'AL1', 'DG1', 'PR1']);
 
 export function parseHL7(raw: string): { doc: HL7Document; leaves: HL7Leaf[] } {
   const text = raw.replace(/\r\n/g, '\r');

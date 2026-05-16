@@ -13,6 +13,13 @@
 export interface FhirLeaf {
   path: string;
   value: string;
+  /**
+   * For FHIR `reference` fields only: the "ResourceType/" prefix that must be
+   * prepended when writing back. The `value` carries only the local ID part
+   * (the substring after the final "/") so the detection engine sees a bare ID
+   * rather than a URL. reconstructFhir restores the prefix automatically.
+   */
+  referencePrefix?: string;
 }
 
 export function parseFhir(json: string): { resource: unknown; leaves: FhirLeaf[] } {
@@ -25,7 +32,24 @@ export function parseFhir(json: string): { resource: unknown; leaves: FhirLeaf[]
 function walk(node: unknown, path: string, out: FhirLeaf[]): void {
   if (node === null || node === undefined) return;
   if (typeof node === 'string') {
-    if (shouldProcessField(path)) out.push({ path, value: node });
+    if (shouldProcessField(path)) {
+      // `reference` fields look like "Patient/12345" or "urn:uuid:…".
+      // We only want to run detection on the local ID part (after the last "/")
+      // so the engine sees a bare identifier rather than a URL or resource type.
+      // Fragments ("#contained") and entries with no slash are skipped.
+      const leafKey = path.split('.').pop()?.replace(/\[\d+\]/, '');
+      if (leafKey === 'reference') {
+        const slashIdx = node.lastIndexOf('/');
+        if (slashIdx < 0 || node.startsWith('#')) return; // structural / fragment ref
+        out.push({
+          path,
+          value: node.slice(slashIdx + 1),
+          referencePrefix: node.slice(0, slashIdx + 1),
+        });
+        return;
+      }
+      out.push({ path, value: node });
+    }
     return;
   }
   if (typeof node !== 'object') return;
@@ -41,6 +65,12 @@ function walk(node: unknown, path: string, out: FhirLeaf[]): void {
 /**
  * Skip fields where redaction would corrupt the FHIR semantics.
  * resourceType, system, code, status, etc. are structural.
+ *
+ * NOTE: `reference` and `id` are intentionally NOT listed here.
+ * - `id` values are resource identifiers (MRNs, UUIDs) that must be redacted.
+ * - `reference` values are handled specially in walk(): only the local ID part
+ *   (after the final "/") is extracted and processed; the prefix is restored in
+ *   reconstructFhir() via FhirLeaf.referencePrefix.
  */
 const SKIP_FIELDS = new Set([
   'resourceType',
@@ -50,10 +80,8 @@ const SKIP_FIELDS = new Set([
   'use',
   'type',
   'unit',
-  'reference',
   'profile',
   'meta',
-  'id',
   'fullUrl',
   'versionId',
   'gender',
@@ -71,14 +99,17 @@ function shouldProcessField(path: string): boolean {
 /**
  * Apply de-identified values back into a deep clone of the original resource.
  * Each leaf is set by walking its JSON path.
+ *
+ * For `reference` leaves, referencePrefix is prepended so the written value
+ * remains "ResourceType/<replacement>" rather than a bare token.
  */
 export function reconstructFhir(
   resource: unknown,
-  replacements: Array<{ path: string; replacement: string }>
+  replacements: Array<{ path: string; replacement: string; referencePrefix?: string }>
 ): string {
   const clone = JSON.parse(JSON.stringify(resource));
-  for (const { path, replacement } of replacements) {
-    setByPath(clone, path, replacement);
+  for (const { path, replacement, referencePrefix } of replacements) {
+    setByPath(clone, path, (referencePrefix ?? '') + replacement);
   }
   return JSON.stringify(clone, null, 2);
 }
