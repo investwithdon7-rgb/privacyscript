@@ -53,9 +53,14 @@
   #                       first OCR use and cached in IndexedDB thereafter.
   #                       worker.min.js + core WASM are self-hosted (script-src
   #                       'self'); only the traineddata fetch needs this origin.
+  # data:              — Tesseract.js core WASM loaders (tesseract-core-*.wasm.js)
+  #                       are Emscripten SINGLE_FILE builds: the .wasm binary is
+  #                       inlined as a base64 data URI and loaded via fetch().
+  #                       connect-src must include data: to allow this fetch().
+  #                       Scope: fetch()/XHR only — does not relax script-src.
   # upgrade-insecure-requests — forces any accidental http:// ref to https://.
   # block-all-mixed-content   — belt-and-braces against mixed content.
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://*.xethub.hf.co https://*.hf.co https://cdn.jsdelivr.net; worker-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests; block-all-mixed-content
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' data: https://huggingface.co https://cdn-lfs.huggingface.co https://cdn-lfs-us-1.huggingface.co https://*.xethub.hf.co https://*.hf.co https://cdn.jsdelivr.net; worker-src 'self' blob:; child-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'; upgrade-insecure-requests; block-all-mixed-content
 
   # ── Caching — default no-store for all pages ─────────────────────────────
   # Health tool — page HTML must never be cached in the browser (shared device
