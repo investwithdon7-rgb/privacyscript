@@ -13,10 +13,35 @@ export default function OutputPage() {
   const s = useSession();
 
   useEffect(() => {
-    if (!s.deidentifiedOutput && !s.deidentifiedBytes) router.replace('/');
-  }, [s.deidentifiedOutput, s.deidentifiedBytes, router]);
+    // Only redirect home if there's truly nothing to show AND no error to display.
+    if (!s.deidentifiedOutput && !s.deidentifiedBytes && !s.error) router.replace('/');
+  }, [s.deidentifiedOutput, s.deidentifiedBytes, s.error, router]);
 
-  if ((!s.deidentifiedOutput && !s.deidentifiedBytes) || !s.mode) return null;
+  // Show a visible error page rather than silently redirecting.
+  if (!s.deidentifiedOutput && !s.deidentifiedBytes) {
+    if (!s.mode && !s.error) return null; // redirect in flight
+    return (
+      <main className="min-h-screen max-w-5xl mx-auto px-6">
+        <Brand subtitle="Output" />
+        <div
+          className="mt-10 p-5 rounded-xl"
+          style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid var(--color-danger)' }}
+        >
+          <div className="font-semibold mb-1" style={{ color: 'var(--color-danger)' }}>
+            {s.error ? 'Output error' : 'No output available'}
+          </div>
+          <div className="text-sm">{s.error ?? 'The pipeline did not produce output. Try re-processing the record.'}</div>
+        </div>
+        <div className="mt-6">
+          <button onClick={() => router.push('/')} className="btn-secondary">
+            Start over
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  if (!s.mode) return null;
 
   return (
     <main className="min-h-screen max-w-6xl mx-auto px-6">

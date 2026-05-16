@@ -65,7 +65,10 @@ async function loadPdfjs() {
 
 export async function ingestPdf(bytes: ArrayBuffer): Promise<PdfIngest> {
   const pdfjs = await loadPdfjs();
-  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(bytes) });
+  // pdfjs-dist transfers the typed-array's buffer to its worker via postMessage,
+  // which detaches the original ArrayBuffer. Slice a copy so pdfjs can own the
+  // clone while we retain `bytes` unmodified for pdf-lib reconstruction later.
+  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(bytes.slice(0)) });
   const pdf = await loadingTask.promise;
 
   const pages: PdfPageText[] = [];

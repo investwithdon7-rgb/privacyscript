@@ -88,7 +88,10 @@ export async function ingestScannedPdf(
     pdfjs.GlobalWorkerOptions.workerSrc = asset('/pdf.worker.min.mjs');
   }
 
-  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(bytes) });
+  // pdfjs-dist transfers the typed-array's buffer to its worker via postMessage,
+  // detaching the original. Slice a copy so pdfjs transfers the clone while
+  // `bytes` stays intact for pdf-lib reconstruction in reconstructScannedPdf.
+  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(bytes.slice(0)) });
   const pdf = await loadingTask.promise;
 
   const concurrency = Math.max(

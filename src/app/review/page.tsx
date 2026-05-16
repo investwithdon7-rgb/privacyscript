@@ -15,7 +15,29 @@ export default function ReviewPage() {
     if (!s.risk && !s.error) router.replace('/');
   }, [s.risk, s.error, router]);
 
-  if (!s.risk) return null;
+  // Show error state even when risk is absent (finalise errored before stage 4).
+  if (!s.risk) {
+    if (!s.error) return null;
+    return (
+      <main className="min-h-screen max-w-5xl mx-auto px-6">
+        <Brand subtitle="Risk assessment" />
+        <div
+          className="mt-10 p-5 rounded-xl"
+          style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid var(--color-danger)' }}
+        >
+          <div className="font-semibold mb-1" style={{ color: 'var(--color-danger)' }}>
+            Processing error
+          </div>
+          <div className="text-sm">{s.error}</div>
+        </div>
+        <div className="mt-6">
+          <button onClick={() => router.push('/')} className="btn-secondary">
+            Start over
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   const canProceed =
     s.risk.level !== 'HIGH' || acknowledged;
@@ -29,6 +51,18 @@ export default function ReviewPage() {
           <h1 className="text-3xl font-bold">Risk assessment</h1>
           <RiskBadge level={s.risk.level} />
         </div>
+
+        {s.error ? (
+          <div
+            className="mt-6 p-4 rounded-xl"
+            style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid var(--color-danger)' }}
+          >
+            <div className="font-semibold mb-1" style={{ color: 'var(--color-danger)' }}>
+              Error during processing
+            </div>
+            <div className="text-sm">{s.error}</div>
+          </div>
+        ) : null}
 
         <div className="surface rounded-2xl p-6 mt-6">
           <div className="grid md:grid-cols-3 gap-6">
@@ -44,13 +78,15 @@ export default function ReviewPage() {
             />
             <Stat
               label="Validation"
-              value={s.validation?.passed ? 'PASS' : 'LEAK'}
+              value={s.validation == null ? '…' : s.validation.passed ? 'PASS' : 'LEAK'}
               hint={
-                s.validation?.passed
-                  ? 'No identifier found in output'
-                  : `${s.validation?.leaks.length ?? 0} potential leak(s)`
+                s.validation == null
+                  ? 'Still running…'
+                  : s.validation.passed
+                  ? `No original identifier in output${s.validation.leaks.length > 0 ? ` · ${s.validation.leaks.length} regex residual(s)` : ''}`
+                  : `${s.validation.originalsLeaked.length} original(s) leaked verbatim`
               }
-              tone={s.validation?.passed ? 'good' : 'bad'}
+              tone={s.validation == null ? 'neutral' : s.validation.passed ? 'good' : 'bad'}
             />
           </div>
 
@@ -90,30 +126,44 @@ export default function ReviewPage() {
           </table>
         </div>
 
-        {s.risk.level === 'HIGH' || !s.validation?.passed ? (
+        {/* HIGH risk acknowledgment */}
+        {s.risk.level === 'HIGH' && (s.validation?.passed ?? false) ? (
           <div
             className="mt-6 p-4 rounded-xl"
             style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid var(--color-danger)' }}
           >
             <div className="font-semibold" style={{ color: 'var(--color-danger)' }}>
-              {s.validation?.passed ? 'HIGH risk' : 'Validation failed — identifier leak in output'}
+              HIGH risk
             </div>
             <p className="text-sm mt-1 text-[color:var(--color-muted)]">
-              {s.validation?.passed
-                ? 'k-anonymity is below the threshold. You may proceed only if you accept the residual re-identification risk.'
-                : 'The validation pass found a direct identifier in the de-identified output. Inspect the diff and re-process before sharing.'}
+              k-anonymity is below the threshold. You may proceed only if you accept the residual
+              re-identification risk.
             </p>
-            {s.validation?.passed ? (
-              <label className="flex items-center gap-2 mt-3 text-sm">
-                <input
-                  type="checkbox"
-                  checked={acknowledged}
-                  onChange={(e) => setAcknowledged(e.target.checked)}
-                  className="accent-[#EF4444]"
-                />
-                I accept the residual risk and confirm I have a lawful basis to proceed.
-              </label>
-            ) : null}
+            <label className="flex items-center gap-2 mt-3 text-sm">
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(e) => setAcknowledged(e.target.checked)}
+                className="accent-[#EF4444]"
+              />
+              I accept the residual risk and confirm I have a lawful basis to proceed.
+            </label>
+          </div>
+        ) : null}
+
+        {/* Hard-fail: verbatim original leaked into output */}
+        {s.validation != null && !s.validation.passed ? (
+          <div
+            className="mt-6 p-4 rounded-xl"
+            style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid var(--color-danger)' }}
+          >
+            <div className="font-semibold" style={{ color: 'var(--color-danger)' }}>
+              Validation failed — identifier leaked verbatim
+            </div>
+            <p className="text-sm mt-1 text-[color:var(--color-muted)]">
+              {s.validation.originalsLeaked.length} original identifier value(s) were found
+              unchanged in the de-identified output. Inspect the diff and re-process before sharing.
+            </p>
           </div>
         ) : null}
 
@@ -124,9 +174,17 @@ export default function ReviewPage() {
           <button
             onClick={() => router.push('/output/')}
             className="btn-primary"
-            disabled={!canProceed || !s.validation?.passed}
+            disabled={
+              // Blocked until all pipeline stages have completed.
+              s.stageIndex < 6 ||
+              // Blocked if risk is HIGH and user hasn't acknowledged.
+              !canProceed ||
+              // Blocked only on verbatim original identifier leaks (hard constraint).
+              // Regex residuals (s.validation.leaks) are informational warnings only.
+              (s.validation != null && !s.validation.passed)
+            }
           >
-            View output
+            {s.stageIndex < 6 ? 'Processing…' : 'View output'}
           </button>
         </div>
       </section>

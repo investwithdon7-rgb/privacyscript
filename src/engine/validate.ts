@@ -56,7 +56,11 @@ export function validate(
   }
 
   return {
-    passed: originalsLeaked.length === 0 && leaks.length === 0,
+    // Only verbatim original identifier leaks are a hard block.
+    // Regex residuals (leaks) are surfaced as warnings — they are informational
+    // because broad patterns (ZIP = any 5 digits, NHS = any 10-digit sequence)
+    // produce false positives on legitimate anonymised placeholders and dates.
+    passed: originalsLeaked.length === 0,
     leaks,
     originalsLeaked,
   };
