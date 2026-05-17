@@ -47,30 +47,39 @@
  *      origins and cannot carry Cross-Origin-Resource-Policy headers.
  *
  * Fix: replace Ka/La = "data:application/octet-stream;base64,<4MB>"
- *      with  Ka/La = "<basePath>/tesseract/<filename>.wasm"
+ *      with a JS expression that constructs the absolute WASM URL at runtime.
  *
- * Emscripten's path-resolution code is:
+ * WHY A STRING LITERAL IS NOT ENOUGH
+ * -----------------------------------
+ * Emscripten's path-resolution code (runs inside the importScripts'd .wasm.js):
  *
  *   if (!Ka.startsWith("data:application/octet-stream;base64,")) {
  *     Ka = b.locateFile ? b.locateFile(Ka, f) : f + Ka;
  *   }
  *
- * Inside a blob: Worker, _scriptDir is a LOCAL closure var (set by the IIFE
- * that wraps the module at importScripts load time). At that moment document
- * is undefined and __filename doesn't exist in a browser Worker, so _scriptDir
- * stays undefined. Emscripten then falls back to self.location.href (the blob:
- * URL), sees the "blob:" prefix, and resets f = "". Tesseract.js does not pass
- * locateFile. So the resolution is: Ka = "" + Ka = Ka (unchanged).
+ * Inside a blob: Worker, Emscripten detects self.location.href = "blob:..." and
+ * resets scriptDirectory f = "". Tesseract.js does not pass locateFile.
+ * So: Ka = "" + Ka = Ka (unchanged).
  *
- * Solution: set Ka/La to the FULL absolute root-relative path at patch time:
- *   Ka = "/privacyscript/tesseract/tesseract-core-simd-lstm.wasm"
+ * If Ka is a root-relative string "/privacyscript/tesseract/filename.wasm",
+ * fetch(Ka) then fails with "Failed to parse URL from /privacyscript/..." because
+ * fetch() in a blob Worker cannot resolve root-relative paths — the Worker's base
+ * URL is the blob: URL itself, which has an opaque origin, and the URL parser
+ * cannot map "/" → page-origin inside that context.
  *
- * f + Ka = "" + "/privacyscript/tesseract/filename.wasm"
- *        = "/privacyscript/tesseract/filename.wasm"   ← root-relative, valid URL
+ * SOLUTION: runtime expression using self.location.href
+ * ------------------------------------------------------
+ * We patch Ka/La to a JS expression that runs when the Emscripten IIFE executes:
  *
- * Chrome resolves root-relative URLs against the document origin in blob Workers,
- * so fetch("/privacyscript/tesseract/filename.wasm") resolves to the correct
- * same-origin URL. Files shrink from ~3.8–4.6 MB to ~122 KB after stripping.
+ *   Ka = new URL("/privacyscript/tesseract/filename.wasm",
+ *               new URL(self.location.href).origin).href
+ *
+ * In a blob Worker, new URL("blob:https://host/uuid").origin = "https://host".
+ * So the expression evaluates to "https://host/privacyscript/tesseract/filename.wasm"
+ * — a fully absolute URL that fetch() can always resolve, regardless of context.
+ *
+ * The expression is still <= 150 bytes; files shrink from ~3.8–4.6 MB to ~122 KB.
+ * The approach is origin-agnostic: it works on tekdruid.com, pages.dev, localhost.
  *
  * BASEPATH: read from NEXT_PUBLIC_BASE_PATH env var (defaults to /privacyscript,
  * matching next.config.js).
@@ -119,11 +128,23 @@ for (const { src, dest, wasmFile } of FILES) {
   console.log(`[copy-tesseract-assets] ${dest}  (${kb} KB)`);
   copied++;
 
-  // ── Patch: replace inline WASM data URI with absolute root-relative path ───
+  // ── Patch: replace inline WASM data URI with a runtime absolute-URL expression ─
   // SIMD+LSTM / LSTM variants use Ka for the binary; SIMD / baseline use La.
-  // We replace the entire base64 blob with the absolute URL to the .wasm file.
+  //
+  // We replace:
+  //   Ka="data:application/octet-stream;base64,<4 MB>"
+  // with:
+  //   Ka=new URL("/privacyscript/tesseract/filename.wasm",new URL(self.location.href).origin).href
+  //
+  // The expression is evaluated when the Emscripten IIFE runs inside the blob
+  // Worker. new URL(self.location.href).origin extracts the page origin from the
+  // blob: URL at runtime, so the result is a fully absolute, same-origin URL that
+  // fetch() can resolve from any Worker context. See the header comment for details.
   if (wasmFile) {
-    const absoluteWasmPath = `${basePath}/tesseract/${wasmFile}`;
+    const wasmPath = `${basePath}/tesseract/${wasmFile}`;
+    // Build the replacement expression. JSON.stringify adds the required quotes
+    // around the path string inside the new URL() call.
+    const expr = `new URL(${JSON.stringify(wasmPath)},new URL(self.location.href).origin).href`;
     let content = fs.readFileSync(destPath, 'utf8');
     let patchedVar = null;
     for (const varName of ['Ka', 'La']) {
@@ -131,7 +152,7 @@ for (const { src, dest, wasmFile } of FILES) {
         `${varName}\\s*=\\s*"data:application\\/octet-stream;base64,[A-Za-z0-9+/=]+"`
       );
       if (re.test(content)) {
-        content = content.replace(re, `${varName}="${absoluteWasmPath}"`);
+        content = content.replace(re, `${varName}=${expr}`);
         patchedVar = varName;
         break;
       }
@@ -139,7 +160,7 @@ for (const { src, dest, wasmFile } of FILES) {
     if (patchedVar) {
       fs.writeFileSync(destPath, content, 'utf8');
       const kbAfter = Math.round(fs.statSync(destPath).size / 1024);
-      console.log(`[copy-tesseract-assets]   patched ${patchedVar} → "${absoluteWasmPath}"  (${kbAfter} KB after strip)`);
+      console.log(`[copy-tesseract-assets]   patched ${patchedVar} → runtime URL expr for "${wasmPath}"  (${kbAfter} KB after strip)`);
       patched++;
     } else {
       console.warn(`[copy-tesseract-assets]   WARNING: Ka/La data-URI not found in ${dest} — patch skipped`);
