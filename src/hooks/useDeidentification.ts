@@ -78,7 +78,8 @@ export async function ingestAndDetect(file: File): Promise<void> {
         const typedResult = await ingestPdf(sourceBytes);
 
         // Heuristic: scanned PDFs return very little text per page.
-        // A document is treated as scanned only when BOTH:
+        // A document is treated as scanned only when ALL of:
+        //   - at least one page has some content to compare
         //   - average chars/page < 60  (almost no text layer on average)
         //   - max chars on any single page < 120 (no page has meaningful text)
         // Without the maxPerPage guard a mixed document (cover page with a title
@@ -89,8 +90,9 @@ export async function ingestAndDetect(file: File): Promise<void> {
             ? 0
             : textLengths.reduce((s, l) => s + l, 0) / typedResult.pages.length;
         const maxPerPage = textLengths.reduce((m, l) => Math.max(m, l), 0);
+        const hasAnyContent = textLengths.some((l) => l > 0);
 
-        if (avgPerPage < 60 && maxPerPage < 120) {
+        if (hasAnyContent && avgPerPage < 60 && maxPerPage < 120) {
           // Treat as scanned.
           const { ingestScannedPdf } = await import('@/formats/pdf-scanned');
           const onProg = (p: ScanProgress) => {
@@ -312,7 +314,7 @@ async function reconstructOutput(
     }
     case 'DOCX': {
       const parsed = s.parsedOriginal as DocxIngestResult;
-      const { applyMappingToBody, rebuildDocx } = await import('@/formats/docx');
+      const { applyMappingToBody, rebuildDocxInPlace } = await import('@/formats/docx');
       switch (s.docxFormat) {
         case 'MARKDOWN':
           return {
@@ -324,7 +326,10 @@ async function reconstructOutput(
           };
         case 'DOCX':
         default: {
-          const bytes = await rebuildDocx(replacement.text);
+          // In-place rebuild from the ORIGINAL .docx ZIP: preserves every byte
+          // of formatting, styles, tables, images and theme. The mapping
+          // (original→replacement) is applied inside `<w:t>` text runs only.
+          const bytes = await rebuildDocxInPlace(parsed.originalBytes, replacement.mapping);
           return { bytesOutput: bytes };
         }
       }

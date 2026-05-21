@@ -15,6 +15,8 @@ export interface ReplacementResult {
   }>;
   /** Per-record date shift in days (pseudonymise mode only, undefined otherwise). */
   dateShiftDays?: number;
+  /** The DMY/MDY interpretation chosen for this document. Exposed for the audit log. */
+  dateFormatHint?: DateFormatHint;
 }
 
 interface ReplaceOptions {
@@ -26,12 +28,18 @@ interface ReplaceOptions {
 /**
  * Apply replacement to text given a list of merged spans and options.
  *
- * Strategy:
- *  - Iterate spans by descending start index so offsets remain valid.
- *  - For pseudonymise: deterministic HMAC token per (label, originalToken).
- *  - For anonymise: per-label generalisation. Dates -> YEAR or [REDACTED];
- *    geographics -> first 3 digits (US) / outward code (UK); names removed.
- *  - Quasi-identifiers are only redacted if the user opted in.
+ * Pipeline (four passes — each O(N), so total is linear in document length):
+ *  1. INFER DATE FORMAT — scan all DATE spans, decide DMY vs MDY for the
+ *     document. A single date with day > 12 resolves the ambiguity; we don't
+ *     re-derive per-date because a clinical record's dates are nearly always
+ *     in one locale.
+ *  2. COMPUTE REPLACEMENTS — collect unique (label, original) pairs and run
+ *     HMAC pseudonym computation IN PARALLEL via Promise.all. This replaces
+ *     the previous serial `await` per span (which was ~10× slower on docs
+ *     with many identifiers).
+ *  3. ASSEMBLE OUTPUT — walk the original text once forward, pushing
+ *     (untouched-prefix | replacement) pairs into a string[] and joining at
+ *     the end. O(N) instead of the previous O(N²) slice-and-concat loop.
  */
 export async function replaceSpans(
   text: string,
@@ -47,39 +55,108 @@ export async function replaceSpans(
       ? await deriveDateShift(options.secret!)
       : undefined;
 
-  // Combine direct spans with opt-in quasi spans.
+  // Combine direct spans with opt-in quasi spans. Sort ASCENDING so we can
+  // walk the document once forward in the assembly pass.
   const activeQuasi = quasiSpans.filter((s) =>
     options.quasiToRedact.has(s.label)
   );
-  const allSpans = [...spans, ...activeQuasi].sort((a, b) => b.start - a.start);
+  const allSpans = [...spans, ...activeQuasi].sort(
+    (a, b) => a.start - b.start || b.end - a.end
+  );
 
-  let out = text;
+  // ── Pass 1: infer DMY vs MDY from the document's own dates ──────────────
+  const dateStrings: string[] = [];
   for (const span of allSpans) {
+    if (span.label !== 'DATE') continue;
+    const s = span.captureStart ?? span.start;
+    const e = span.captureEnd ?? span.end;
+    dateStrings.push(text.slice(s, e));
+  }
+  const dateFormatHint = inferDateFormat(dateStrings);
+
+  // ── Pass 2: extract token spans (start, end, original) ──────────────────
+  interface TokenSpec {
+    start: number;
+    end: number;
+    original: string;
+    span: Span;
+  }
+  const tokenSpecs: TokenSpec[] = allSpans.map((span) => {
     const start = span.captureStart ?? span.start;
     const end = span.captureEnd ?? span.end;
-    const original = text.slice(start, end);
+    return { start, end, original: text.slice(start, end), span };
+  });
 
-    let replacement: string;
+  // ── Pass 3: parallel replacement computation, deduped per (label, token) ─
+  // Same (label, original) → same replacement, so we hash each unique pair
+  // exactly once. Anonymise replacements are synchronous and need no Promise
+  // round-trip; only pseudonyms (HMAC) get awaited. All pseudonyms run in
+  // parallel via Promise.all — previously they were awaited serially, which
+  // dominated runtime on documents with many identifiers.
+  const cache = new Map<string, string>();
+  const seenKeys = new Set<string>();
+  const pseudoPending: Array<Promise<{ key: string; replacement: string }>> = [];
+
+  const keyOf = (label: IdentifierLabel, original: string) => `${label}\0${original}`;
+
+  for (const t of tokenSpecs) {
+    const key = keyOf(t.span.label, t.original);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+
     if (options.mode === 'PSEUDONYMISE') {
       if (!options.secret) {
         throw new Error('Pseudonymise mode requires a session secret.');
       }
-      replacement = await pseudonymise(
-        span.label,
-        original,
-        options.secret,
-        dateShiftDays!
+      pseudoPending.push(
+        pseudonymise(
+          t.span.label,
+          t.original,
+          options.secret,
+          dateShiftDays!,
+          dateFormatHint
+        ).then((replacement) => ({ key, replacement }))
       );
     } else {
-      replacement = anonymise(span.label, original);
+      cache.set(key, anonymise(t.span.label, t.original, dateFormatHint));
     }
-
-    mapping[original] = replacement;
-    replacements.push({ span, original, replacement });
-    out = out.slice(0, start) + replacement + out.slice(end);
   }
 
-  return { text: out, mapping, replacements, dateShiftDays };
+  // Resolve all pseudonyms in parallel.
+  if (pseudoPending.length > 0) {
+    const settled = await Promise.all(pseudoPending);
+    for (const { key, replacement } of settled) cache.set(key, replacement);
+  }
+
+  // ── Pass 4: assemble output linearly (single forward walk) ──────────────
+  const segments: string[] = [];
+  let cursor = 0;
+  for (const t of tokenSpecs) {
+    if (t.start < cursor) {
+      // Overlap — the merge step in detect.ts is supposed to prevent this,
+      // but if a residual overlap slips through we keep the earlier
+      // replacement and skip this span. Still record it for the audit log.
+      const replacement = cache.get(keyOf(t.span.label, t.original))!;
+      mapping[t.original] = replacement;
+      replacements.push({ span: t.span, original: t.original, replacement });
+      continue;
+    }
+    const replacement = cache.get(keyOf(t.span.label, t.original))!;
+    if (t.start > cursor) segments.push(text.slice(cursor, t.start));
+    segments.push(replacement);
+    cursor = t.end;
+    mapping[t.original] = replacement;
+    replacements.push({ span: t.span, original: t.original, replacement });
+  }
+  if (cursor < text.length) segments.push(text.slice(cursor));
+
+  return {
+    text: segments.join(''),
+    mapping,
+    replacements,
+    dateShiftDays,
+    dateFormatHint,
+  };
 }
 
 /* ----------------------------------------------------------------------------
@@ -90,11 +167,12 @@ async function pseudonymise(
   label: IdentifierLabel,
   token: string,
   secret: SessionSecret,
-  shiftDays: number
+  shiftDays: number,
+  dateFormatHint: DateFormatHint
 ): Promise<string> {
   // Dates: shift deterministically.
   if (label === 'DATE') {
-    const shifted = shiftDate(token, shiftDays);
+    const shifted = shiftDate(token, shiftDays, dateFormatHint);
     return shifted ?? (await generatePseudonym(secret, label, token));
   }
   // Age over 89: always render as "90+" per HIPAA.
@@ -121,46 +199,76 @@ async function deriveDateShift(secret: SessionSecret): Promise<number> {
   return v === 0 ? 1 : v;
 }
 
-function shiftDate(token: string, shiftDays: number): string | null {
-  const parsed = parseLooseDate(token);
+function shiftDate(token: string, shiftDays: number, hint: DateFormatHint): string | null {
+  const parsed = parseLooseDate(token, hint);
   if (!parsed) return null;
   const ms = parsed.date.getTime() + shiftDays * 86_400_000;
   const d = new Date(ms);
-  // Render in the same shape as the input where possible.
   return formatLikeInput(d, parsed.format);
 }
 
 interface ParsedDate {
   date: Date;
-  format: 'ISO' | 'DMY' | 'MDY' | 'MONTH_NAME' | 'UNKNOWN';
+  format: 'ISO' | 'DMY' | 'MDY' | 'MONTH_NAME_DMY' | 'MONTH_NAME_MDY' | 'UNKNOWN';
 }
 
-function parseLooseDate(token: string): ParsedDate | null {
-  // ISO yyyy-mm-dd
-  let m = token.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (m) return makeDate(+m[1], +m[2], +m[3], 'ISO');
+/**
+ * One regex covering all four loose-date shapes the catalogue can produce:
+ *   - ISO   yyyy-mm-dd            → groups iso_y / iso_m / iso_d
+ *   - DMY-or-MDY  d/m/y           → groups num_a / num_b / num_y
+ *                                    (disambiguated by `hint`)
+ *   - "2 Jan 2024"                → groups bmn_d / bmn_name / bmn_y
+ *   - "Jan 2, 2024"               → groups amn_name / amn_d / amn_y
+ *
+ * Anchored to ^...$ so a single token from the engine's match is matched
+ * end-to-end, with no partial-prefix surprises.
+ */
+const DATE_LOOSE_RE = new RegExp(
+  '^(?:' +
+    '(?<iso_y>\\d{4})-(?<iso_m>\\d{1,2})-(?<iso_d>\\d{1,2})' +
+    '|' +
+    '(?<num_a>\\d{1,2})[\\/\\-\\.](?<num_b>\\d{1,2})[\\/\\-\\.](?<num_y>\\d{2,4})' +
+    '|' +
+    '(?<bmn_d>\\d{1,2})\\s+(?<bmn_name>[A-Za-z]+)\\.?\\s+(?<bmn_y>\\d{2,4})' +
+    '|' +
+    '(?<amn_name>[A-Za-z]+)\\.?\\s+(?<amn_d>\\d{1,2})(?:st|nd|rd|th)?,?\\s+(?<amn_y>\\d{2,4})' +
+  ')$'
+);
 
-  // mm/dd/yyyy or dd/mm/yyyy — assume DMY for EU/UK feel of the tool.
-  m = token.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
-  if (m) {
-    const y = +m[3] < 100 ? 2000 + +m[3] : +m[3];
-    return makeDate(y, +m[2], +m[1], 'DMY');
+function parseLooseDate(token: string, hint: DateFormatHint = 'DMY'): ParsedDate | null {
+  const m = token.match(DATE_LOOSE_RE);
+  if (!m || !m.groups) return null;
+  const g = m.groups;
+
+  if (g.iso_y) {
+    return makeDate(+g.iso_y, +g.iso_m, +g.iso_d, 'ISO');
   }
-
-  // 2 Jan 2024
-  m = token.match(/^(\d{1,2})\s+([A-Za-z]+)\.?\s+(\d{2,4})$/);
-  if (m) {
-    const mo = monthFromName(m[2]);
-    if (mo) return makeDate(+m[3], mo, +m[1], 'MONTH_NAME');
+  if (g.num_a !== undefined) {
+    const a = +g.num_a;
+    const b = +g.num_b;
+    const y = +g.num_y < 100 ? 2000 + +g.num_y : +g.num_y;
+    // Disambiguate using the document-wide hint, falling back to DMY (UK/EU
+    // bias matching the previous implementation). If the literal slots make
+    // one interpretation impossible (e.g. first slot > 12 means it must be
+    // a day), trust that signal regardless of hint.
+    let useMdy: boolean;
+    if (a > 12) useMdy = false;       // first slot is a day → DMY
+    else if (b > 12) useMdy = true;   // second slot is a day → MDY
+    else useMdy = hint === 'MDY';
+    return useMdy
+      ? makeDate(y, a, b, 'MDY')
+      : makeDate(y, b, a, 'DMY');
   }
-
-  // Jan 2, 2024
-  m = token.match(/^([A-Za-z]+)\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{2,4})$/);
-  if (m) {
-    const mo = monthFromName(m[1]);
-    if (mo) return makeDate(+m[3], mo, +m[2], 'MONTH_NAME');
+  if (g.bmn_d) {
+    const mo = monthFromName(g.bmn_name!);
+    if (!mo) return null;
+    return makeDate(+g.bmn_y!, mo, +g.bmn_d, 'MONTH_NAME_DMY');
   }
-
+  if (g.amn_name) {
+    const mo = monthFromName(g.amn_name);
+    if (!mo) return null;
+    return makeDate(+g.amn_y!, mo, +g.amn_d!, 'MONTH_NAME_MDY');
+  }
   return null;
 }
 
@@ -181,8 +289,10 @@ function formatLikeInput(d: Date, format: ParsedDate['format']): string {
       return `${day}/${m}/${y}`;
     case 'MDY':
       return `${m}/${day}/${y}`;
-    case 'MONTH_NAME':
+    case 'MONTH_NAME_DMY':
       return `${day} ${monthName(d.getUTCMonth() + 1)} ${y}`;
+    case 'MONTH_NAME_MDY':
+      return `${monthName(d.getUTCMonth() + 1)} ${day}, ${y}`;
     default:
       return `${y}-${m}-${day}`;
   }
@@ -205,15 +315,45 @@ function monthFromName(name: string): number | null {
 }
 
 /* ----------------------------------------------------------------------------
+ * Document-wide date format inference
+ *
+ * Clinical documents use one date format throughout. A US discharge summary
+ * is MDY end-to-end; a UK referral letter is DMY end-to-end. We scan all
+ * d/m/y-shape dates: any date with first-slot > 12 proves DMY; any with
+ * second-slot > 12 proves MDY. Conflicting evidence or no evidence at all
+ * falls back to DMY (the UK/EU bias matching the previous default).
+ * --------------------------------------------------------------------------*/
+
+export type DateFormatHint = 'DMY' | 'MDY' | 'AMBIGUOUS';
+
+const NUMERIC_DATE_RE = /^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.]\d{2,4}$/;
+
+export function inferDateFormat(dateStrings: string[]): DateFormatHint {
+  let dmyEvidence = 0;
+  let mdyEvidence = 0;
+  for (const s of dateStrings) {
+    const m = s.match(NUMERIC_DATE_RE);
+    if (!m) continue;
+    const a = +m[1];
+    const b = +m[2];
+    if (a > 12 && b <= 12) dmyEvidence++;
+    if (b > 12 && a <= 12) mdyEvidence++;
+  }
+  if (dmyEvidence > 0 && mdyEvidence === 0) return 'DMY';
+  if (mdyEvidence > 0 && dmyEvidence === 0) return 'MDY';
+  return 'AMBIGUOUS';
+}
+
+/* ----------------------------------------------------------------------------
  * Anonymise mode
  * --------------------------------------------------------------------------*/
 
-function anonymise(label: IdentifierLabel, token: string): string {
+function anonymise(label: IdentifierLabel, token: string, dateFormatHint: DateFormatHint): string {
   switch (label) {
     case 'NAME':
       return '[NAME]';
     case 'DATE': {
-      const parsed = parseLooseDate(token);
+      const parsed = parseLooseDate(token, dateFormatHint);
       if (parsed) return String(parsed.date.getUTCFullYear());
       return '[DATE]';
     }

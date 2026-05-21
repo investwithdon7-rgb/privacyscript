@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Brand } from '@/components/Brand';
 import { ModeSelector } from '@/components/ModeSelector';
 import { DropZone } from '@/components/DropZone';
@@ -9,14 +9,27 @@ import { NerBanner } from '@/components/NerBanner';
 import type { Mode } from '@/lib/constants';
 import { resetSession, updateSession } from '@/state/session';
 import { ingestAndDetect } from '@/hooks/useDeidentification';
+import { ensureNerLoaded } from '@/engine/ner';
 
 export default function LandingPage() {
   const router = useRouter();
   const [mode, setMode] = useState<Mode | null>(null);
 
+  // Pre-warm the NER model the moment the landing page mounts. The 50 MB
+  // download happens while the user is choosing a mode + picking a file, so
+  // by the time they click "process" the model is already cached in
+  // IndexedDB. Fire-and-forget — `ensureNerLoaded` is internally memoised and
+  // swallows its own errors, so if the model can't load the engine simply
+  // falls back to regex-only detection on Screen 2.
+  useEffect(() => {
+    void ensureNerLoaded();
+  }, []);
+
   const onFile = async (file: File) => {
     resetSession();
-    updateSession({ mode });
+    // Set filename + mode BEFORE navigating so the process page's redirect
+    // guard (`!s.filename`) does not fire while ingestAndDetect is still running.
+    updateSession({ mode, filename: file.name });
     router.push('/process/');
     // Kick off detection — Screen 2 listens to session state.
     void ingestAndDetect(file);

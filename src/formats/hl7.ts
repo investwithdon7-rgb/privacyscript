@@ -36,7 +36,22 @@ export interface HL7Leaf {
 }
 
 // AL1 = allergy/intolerance, DG1 = diagnosis, PR1 = procedure — all carry PHI.
-const TARGET_SEGMENTS = new Set(['PID', 'PV1', 'IN1', 'IN2', 'NK1', 'GT1', 'NTE', 'OBX', 'AL1', 'DG1', 'PR1']);
+const TARGET_SEGMENTS = new Set([
+  // Core patient / visit / insurance demographics
+  'PID', 'PV1', 'IN1', 'IN2', 'NK1', 'GT1',
+  // Free-text notes
+  'NTE',
+  // Observations (may contain free-text narrative)
+  'OBX',
+  // Allergies — often contain free-text substance names and reaction descriptions
+  'AL1',
+  // Diagnoses — DG1 description field contains free-text diagnostic strings
+  'DG1',
+  // Procedures — PR1 description may contain clinician-authored text
+  'PR1',
+  // Z-segments: DG1 variants used by some EHR vendors
+  'ZDG',
+]);
 
 export function parseHL7(raw: string): { doc: HL7Document; leaves: HL7Leaf[] } {
   const text = raw.replace(/\r\n/g, '\r');
@@ -99,7 +114,13 @@ export function reconstructHL7(
   doc: HL7Document,
   replacements: Array<{ leaf: HL7Leaf; replacement: string }>
 ): string {
-  const segs = JSON.parse(JSON.stringify(doc.segments)) as HL7Segment[];
+  // structuredClone for a deep copy of the segment tree — ~3× faster than the
+  // JSON round-trip on large HL7 messages with many OBX rows. Fall back if the
+  // host lacks it (old test runners only).
+  const segs: HL7Segment[] =
+    typeof structuredClone === 'function'
+      ? structuredClone(doc.segments)
+      : (JSON.parse(JSON.stringify(doc.segments)) as HL7Segment[]);
   for (const { leaf, replacement } of replacements) {
     segs[leaf.segmentIdx].fields[leaf.fieldIdx][leaf.repIdx][leaf.compIdx][leaf.subIdx] =
       replacement;

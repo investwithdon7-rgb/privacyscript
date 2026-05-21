@@ -80,12 +80,38 @@ const SKIP_FIELDS = new Set([
   'use',
   'type',
   'unit',
+  // 'reference' intentionally NOT skipped — FHIR reference strings like
+  // "Patient/JohnDoe_12345" frequently carry patient identifiers that must
+  // be de-identified.
+  // 'id' intentionally NOT skipped — resource-level IDs are HIPAA #18
+  // (unique identifying number) and must be pseudonymised / redacted.
   'profile',
   'meta',
   'fullUrl',
   'versionId',
   'gender',
+  // Structural / display fields that are coding labels, narrative XHTML, or
+  // extension URLs. These look like free text but are not identifiers — e.g.
+  // a Coding.display of "Hypertension" should not be flagged as a name.
+  'display',
+  'div',          // text.div (XHTML narrative wrapper)
+  'url',          // extension.url, Reference.identifier.assigner.identifier.system, etc.
+  'preferred',
+  'language',
+  'contentType',
+  'mode',
+  'rank',
 ]);
+
+/**
+ * Path segments that, if present anywhere in the leaf's JSON path, mean the
+ * leaf is structural (not a PHI candidate). Checked AFTER the leaf-name skip
+ * list so we can catch nested locations even when the leaf itself isn't named.
+ */
+const SKIP_PATH_SEGMENTS = [
+  'text.div',       // narrative XHTML
+  'meta.',          // anything under meta
+];
 
 function shouldProcessField(path: string): boolean {
   const leaf = path.split('.').pop()?.replace(/\[\d+\]/, '');
@@ -93,6 +119,9 @@ function shouldProcessField(path: string): boolean {
   if (SKIP_FIELDS.has(leaf)) return false;
   // Skip structural URI/system paths.
   if (leaf.endsWith('System') || leaf.endsWith('Url')) return false;
+  for (const seg of SKIP_PATH_SEGMENTS) {
+    if (path.includes(seg)) return false;
+  }
   return true;
 }
 
@@ -107,7 +136,14 @@ export function reconstructFhir(
   resource: unknown,
   replacements: Array<{ path: string; replacement: string; referencePrefix?: string }>
 ): string {
-  const clone = JSON.parse(JSON.stringify(resource));
+  // structuredClone is ~3× faster than JSON.parse(JSON.stringify(...)) for
+  // realistic FHIR bundles and handles edge cases (Date, Map, etc) the JSON
+  // round-trip discards. Falls back to the JSON round-trip in environments
+  // without structuredClone (very old Node test runners).
+  const clone: unknown =
+    typeof structuredClone === 'function'
+      ? structuredClone(resource)
+      : JSON.parse(JSON.stringify(resource));
   for (const { path, replacement, referencePrefix } of replacements) {
     setByPath(clone, path, (referencePrefix ?? '') + replacement);
   }

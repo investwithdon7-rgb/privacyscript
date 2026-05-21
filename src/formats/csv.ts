@@ -35,8 +35,17 @@ export function parseCsv(raw: string): CsvIngest {
     dynamicTyping: false,
   });
   if (parsed.errors.length > 0) {
-    const fatal = parsed.errors.find((e) => e.type === 'Quotes');
-    if (fatal) throw new Error(`CSV parse error: ${fatal.message}`);
+    // Throw on fatal structural errors — continuing with a malformed parse
+    // would produce incorrect leaf offsets and misleading redaction output.
+    const fatal = parsed.errors.find(
+      (e) => e.type === 'Quotes' || e.type === 'Delimiter' || e.type === 'FieldMismatch'
+    );
+    if (fatal) throw new Error(`CSV parse error (${fatal.type}): ${fatal.message}`);
+    // Non-fatal errors (e.g. TooFewFields on empty trailing rows) are logged
+    // to the console for visibility but do not abort processing.
+    for (const e of parsed.errors) {
+      console.warn(`[PrivacyScript] CSV non-fatal parse warning (${e.type}): ${e.message}`);
+    }
   }
   const headers = parsed.meta.fields ?? [];
   const rows = parsed.data;

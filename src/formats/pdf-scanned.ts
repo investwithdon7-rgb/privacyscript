@@ -1,35 +1,39 @@
 /**
- * Scanned PDF pipeline (Session 10).
+ * Scanned PDF pipeline.
  *
- * Strategy:
+ * Strategy
+ * --------
  *   1. Render each PDF page to a canvas via pdfjs-dist (200 DPI by default,
  *      300 DPI fallback if OCR confidence < 80%).
- *   2. Pre-process the canvas: greyscale + binarisation to suppress scan
- *      artefacts.
+ *   2. Pre-process: greyscale + binarisation to suppress scan artefacts.
  *   3. Send the page image to a Tesseract.js worker. Tesseract runs in its
  *      own Web Worker, off the main thread, so the UI stays responsive.
  *   4. Run multiple workers in parallel up to (hardwareConcurrency - 1),
- *      reserving one core for the UI.
+ *      capped at 4 to keep RAM pressure manageable on 8 GB devices.
  *   5. Stream completed pages back so the UI can render progress.
- *   6. Cancellation: each worker can be terminated cleanly. Pages already
- *      completed are kept.
  *
- * Output reconstruction:
- *   - Load original PDF with pdf-lib.
- *   - For each detected identifier, find its (page, x, y, width, height)
- *     bounding box from the Tesseract word-level result and draw a redaction
- *     rectangle on the original page.
- *   - The result is the original scan with redacted regions painted over.
- *     The new text layer (the replacement tokens) is written below each box,
- *     making the redacted document searchable post-de-identification.
+ * Worker pool singleton
+ * ---------------------
+ * The Tesseract worker pool is hoisted to a module-level lazy singleton
+ * keyed by `(language : concurrency)`. The previous implementation built and
+ * tore down workers on every document, throwing away ~12 MB of trained
+ * language data per worker each time. With pooling, the second OCR run in a
+ * session starts in milliseconds instead of seconds.
  *
- * Performance:
- *   - English-only language pack (~12MB) instead of the full multi-language
- *     pack (~40MB). Saves bandwidth and load time.
- *   - Tesseract.js caches the language data in IndexedDB after first use.
+ * Cancel semantics: `controller.cancel()` terminates the in-flight pool and
+ * drops it from the singleton so the next document gets a fresh start. This
+ * matches the previous behaviour for cancelled runs while keeping the
+ * happy-path savings.
+ *
+ * Output reconstruction
+ * ---------------------
+ * Caller-selectable RedactionStyle (invisible / highlight / blackbar), default
+ * 'invisible' so the redacted page reads like the original scan with the
+ * substituted token in white space rather than a glaring black bar.
  */
 
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import type { RedactionStyle } from '@/formats/pdf-typed';
 import { asset } from '@/lib/assets';
 
 export interface ScannedPdfWord {
@@ -73,40 +77,86 @@ const DEFAULT_DPI = 200;
 const FALLBACK_DPI = 300;
 const CONFIDENCE_FLOOR = 80;
 
-/**
- * Render and OCR a scanned PDF. Returns the structured ingest and an abort
- * controller so the caller can cancel mid-flight.
- *
- * @param languages - Tesseract language code(s), e.g. "eng" or "eng+fra".
- *   Defaults to English. Passed through to Tesseract.createWorker so the
- *   caller can support multi-language documents without forking the pipeline.
- */
+/* ----------------------------------------------------------------------------
+ * Worker pool singleton
+ * --------------------------------------------------------------------------*/
+
+interface TesseractWorker {
+  recognize: (image: unknown) => Promise<{
+    data: {
+      text: string;
+      confidence: number;
+      words?: Array<{
+        text: string;
+        bbox: { x0: number; y0: number; x1: number; y1: number };
+        confidence: number;
+      }>;
+    };
+  }>;
+  terminate: () => Promise<unknown>;
+}
+
+interface PoolEntry {
+  key: string;
+  workers: TesseractWorker[];
+}
+
+const poolPromises = new Map<string, Promise<PoolEntry>>();
+
+async function acquirePool(
+  languages: string,
+  concurrency: number,
+  workerPath: string,
+  corePath: string
+): Promise<PoolEntry> {
+  const key = `${languages}:${concurrency}`;
+  let p = poolPromises.get(key);
+  if (!p) {
+    p = (async () => {
+      const Tesseract = await import('tesseract.js');
+      const workers = await Promise.all(
+        Array.from({ length: concurrency }, () =>
+          Tesseract.createWorker(languages, undefined, {
+            workerPath,
+            corePath,
+            logger: () => {
+              // No logger — we drive progress per-page instead.
+            },
+          })
+        )
+      );
+      return { key, workers: workers as unknown as TesseractWorker[] };
+    })();
+    poolPromises.set(key, p);
+  }
+  return p;
+}
+
+async function destroyPool(entry: PoolEntry): Promise<void> {
+  poolPromises.delete(entry.key);
+  await Promise.allSettled(entry.workers.map((w) => w.terminate()));
+}
+
+/* ----------------------------------------------------------------------------
+ * Ingest
+ * --------------------------------------------------------------------------*/
+
 export async function ingestScannedPdf(
   bytes: ArrayBuffer,
   onProgress: (p: ScanProgress) => void,
   languages = 'eng'
 ): Promise<{ result: ScannedPdfIngest; controller: ScanController }> {
   const pdfjs = await import('pdfjs-dist');
-  const Tesseract = await import('tesseract.js');
 
   if (typeof window !== 'undefined') {
-    const { asset } = await import('@/lib/assets');
     pdfjs.GlobalWorkerOptions.workerSrc = asset('/pdf.worker.min.mjs');
   }
 
-  // Self-hosted Tesseract asset paths — required to satisfy the nonce-based CSP.
-  //
-  // Tesseract.js creates a blob: Worker and from within it calls importScripts()
-  // twice: once for worker.min.js (workerPath) and once for the matching
-  // tesseract-core-*.wasm.js (corePath + variant name). Both importScripts()
-  // calls are governed by script-src; loading from cdn.jsdelivr.net would be
-  // blocked. scripts/copy-tesseract-assets.js copies all required files into
-  // public/tesseract/ at build time so every call is same-origin.
-  //
-  // Language data (.traineddata) is still fetched from cdn.jsdelivr.net on first
-  // use (connect-src permits it) and cached in IndexedDB thereafter.
+  // See scripts/copy-tesseract-assets.js — these are self-hosted to satisfy
+  // the strict CSP. Both paths are root-relative; in a blob Worker that
+  // resolves to the page origin.
   const tesseractWorkerPath = asset('/tesseract/worker.min.js');
-  const tesseractCorePath   = asset('/tesseract/');
+  const tesseractCorePath = asset('/tesseract/');
 
   // pdfjs-dist transfers the typed-array's buffer to its worker via postMessage,
   // detaching the original. Slice a copy so pdfjs transfers the clone while
@@ -115,37 +165,26 @@ export async function ingestScannedPdf(
   const pdf = await loadingTask.promise;
 
   // Cap at 4 workers even on high-core machines: each worker loads a ~12 MB
-  // language pack and holds a WASM module in memory. Beyond 4, RAM pressure
-  // (especially on 8 GB devices) causes the tab to be killed before benefits
-  // of extra parallelism kick in.
+  // language pack and holds a WASM module in memory.
   const concurrency = Math.max(
     1,
     Math.min(pdf.numPages, Math.min(4, (navigator.hardwareConcurrency ?? 4) - 1))
   );
 
   let cancelled = false;
-  const workers: Array<Awaited<ReturnType<typeof Tesseract.createWorker>>> = [];
+  let pool: PoolEntry | null = null;
+
   const controller: ScanController = {
     cancel: () => {
       cancelled = true;
-      for (const w of workers) void w.terminate();
+      // Tear down the pool so in-flight OCR aborts immediately. Subsequent
+      // documents will pay the cold-start cost again, which is the expected
+      // behaviour after a user cancellation.
+      if (pool) void destroyPool(pool);
     },
   };
 
-  // Pool of workers; each loads the requested language data once and is reused per page.
-  const pool = await Promise.all(
-    Array.from({ length: concurrency }, () =>
-      Tesseract.createWorker(languages, undefined, {
-        // Self-hosted paths so importScripts() satisfies the script-src CSP.
-        workerPath: tesseractWorkerPath,
-        corePath:   tesseractCorePath,
-        logger: () => {
-          // No logger — we drive progress per-page instead.
-        },
-      })
-    )
-  );
-  workers.push(...pool);
+  pool = await acquirePool(languages, concurrency, tesseractWorkerPath, tesseractCorePath);
 
   onProgress({
     pagesDone: 0,
@@ -160,34 +199,43 @@ export async function ingestScannedPdf(
   const tasks: Array<Promise<void>> = [];
   for (let i = 0; i < pdf.numPages; i++) {
     if (cancelled) break;
-    const worker = pool[i % concurrency];
+    const worker = pool.workers[i % concurrency];
     tasks.push(
       (async () => {
         if (cancelled) return;
-        const result = await ocrPage(pdf as { getPage: (n: number) => Promise<unknown> }, i + 1, worker as TesseractWorker);
-        if (cancelled) return;
-        pages[i] = result;
-        done += 1;
-        onProgress({
-          pagesDone: done,
-          pagesTotal: pdf.numPages,
-          currentPage: i + 1,
-          message: `Page ${i + 1} done (confidence ${Math.round(result.confidence)}%).`,
-        });
+        try {
+          const result = await ocrPage(
+            pdf as { getPage: (n: number) => Promise<unknown> },
+            i + 1,
+            worker
+          );
+          if (cancelled) return;
+          pages[i] = result;
+          done += 1;
+          onProgress({
+            pagesDone: done,
+            pagesTotal: pdf.numPages,
+            currentPage: i + 1,
+            message: `Page ${i + 1} done (confidence ${Math.round(result.confidence)}%).`,
+          });
+        } catch (err) {
+          // If the worker was terminated mid-OCR (cancel) the recognize call
+          // rejects — swallow and let the cancel path drive the response.
+          if (!cancelled) throw err;
+        }
       })()
     );
   }
   await Promise.all(tasks);
 
-  // Tidy workers.
-  await Promise.all(pool.map((w) => w.terminate()));
+  // Pool stays alive for the next document — do NOT terminate on the happy
+  // path. The singleton is only torn down on explicit cancel.
 
   // Build globalMap + fullText.
   let fullText = '';
   const globalMap: ScannedPdfIngest['globalMap'] = [];
   pages.forEach((page) => {
     if (!page) return;
-    const startGlobal = fullText.length;
     for (let k = 0; k < page.text.length; k++) {
       globalMap.push({ pageIndex: page.pageIndex, offsetInPage: k });
     }
@@ -207,17 +255,6 @@ export async function ingestScannedPdf(
     },
     controller,
   };
-}
-
-interface TesseractWorker {
-  recognize: (image: unknown) => Promise<{
-    data: {
-      text: string;
-      confidence: number;
-      words?: Array<{ text: string; bbox: { x0: number; y0: number; x1: number; y1: number }; confidence: number }>;
-    };
-  }>;
-  terminate: () => Promise<unknown>;
 }
 
 // PDFPageProxy is typed strictly by pdfjs-dist but the type isn't exposed
@@ -284,7 +321,6 @@ async function renderAndRecognise(
     confidence: w.confidence,
   }));
 
-  // PDF user-space dimensions = viewport / scale.
   return {
     text: ocr.data.text,
     confidence: ocr.data.confidence,
@@ -308,11 +344,17 @@ export interface ScannedRedaction {
 
 export async function reconstructScannedPdf(
   ingest: ScannedPdfIngest,
-  redactions: ScannedRedaction[]
+  redactions: ScannedRedaction[],
+  style: RedactionStyle = 'invisible'
 ): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.load(ingest.originalBytes);
+  // Scanned source has no usable font information (it's an image), so we use
+  // Helvetica as the universal pdf-lib StandardFont. Black text on a white
+  // fill (the 'invisible' default) reads cleanly against any scan.
   const helv = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const pages = pdfDoc.getPages();
+
+  const visual = visualForStyle(style);
 
   const byPage = new Map<number, ScannedRedaction[]>();
   for (const r of redactions) {
@@ -329,6 +371,13 @@ export async function reconstructScannedPdf(
       const bbox = findBBoxForRange(ingestPage, r);
       if (!bbox) continue;
 
+      if (/[^\x00-\xFF]/.test(r.replacement)) {
+        console.warn(
+          `[PrivacyScript] Replacement token "${r.replacement}" contains characters outside ` +
+            'Helvetica WinAnsi range and may not render in the output PDF.'
+        );
+      }
+
       // Convert Tesseract pixel coords (top-left origin) to PDF coords
       // (bottom-left origin) using the OCR DPI scale.
       const scale = 72 / ingestPage.ocrDpi;
@@ -338,15 +387,18 @@ export async function reconstructScannedPdf(
       const height = (bbox.y1 - bbox.y0) * scale;
       const y = pdfPage.getHeight() - yTop - height;
 
-      pdfPage.drawRectangle({
+      const rect: Parameters<typeof pdfPage.drawRectangle>[0] = {
         x: x - 1,
         y: y - 1,
         width: width + 2,
         height: height + 2,
-        color: rgb(0.05, 0.05, 0.05),
-        borderColor: rgb(0.31, 0.27, 0.9),
-        borderWidth: 0.5,
-      });
+        color: visual.fill,
+      };
+      if (visual.borderWidth > 0) {
+        rect.borderColor = visual.border;
+        rect.borderWidth = visual.borderWidth;
+      }
+      pdfPage.drawRectangle(rect);
 
       const fontSize = Math.min(height * 0.8, 9);
       pdfPage.drawText(r.replacement, {
@@ -354,7 +406,7 @@ export async function reconstructScannedPdf(
         y: y + (height - fontSize) / 2,
         size: fontSize,
         font: helv,
-        color: rgb(1, 1, 1),
+        color: visual.text,
         maxWidth: Math.max(width - 4, 20),
       });
     }
@@ -363,24 +415,54 @@ export async function reconstructScannedPdf(
   return await pdfDoc.save();
 }
 
+interface VisualSpec {
+  fill: ReturnType<typeof rgb>;
+  border: ReturnType<typeof rgb>;
+  borderWidth: number;
+  text: ReturnType<typeof rgb>;
+}
+
+function visualForStyle(style: RedactionStyle): VisualSpec {
+  switch (style) {
+    case 'blackbar':
+      return {
+        fill: rgb(0, 0, 0),
+        border: rgb(0, 0, 0),
+        borderWidth: 0,
+        text: rgb(1, 1, 1),
+      };
+    case 'highlight':
+      return {
+        fill: rgb(0.93, 0.92, 0.99),
+        border: rgb(0.31, 0.27, 0.9),
+        borderWidth: 0.5,
+        text: rgb(0.05, 0.05, 0.1),
+      };
+    case 'invisible':
+    default:
+      return {
+        // White matches a typical scanned-paper background. The replacement
+        // text reads as dark printing on the page rather than a redaction.
+        fill: rgb(1, 1, 1),
+        border: rgb(1, 1, 1),
+        borderWidth: 0,
+        text: rgb(0.05, 0.05, 0.1),
+      };
+  }
+}
+
 function findBBoxForRange(page: ScannedPdfPage, r: ScannedRedaction) {
-  const text = page.text;
+  const pageText = page.text;
   let cursor = 0;
   let union: { x0: number; y0: number; x1: number; y1: number } | null = null;
   for (const word of page.words) {
-    // Skip empty / whitespace-only tokens — Tesseract emits these between
-    // words. `indexOf('', cursor)` always returns cursor, causing alignment
-    // drift that shifts every subsequent word's bbox match.
     const token = word.text.trim();
     if (!token) continue;
-
-    const wordStart = text.indexOf(token, cursor);
+    const wordStart = pageText.indexOf(token, cursor);
     if (wordStart < 0) continue;
     const wordEnd = wordStart + token.length;
     cursor = wordEnd;
 
-    // Translate r.start/r.end (which are page-text offsets via globalMap) to
-    // overlap with this word's range.
     if (wordEnd <= r.start || wordStart >= r.end) continue;
     union = union
       ? {

@@ -32,6 +32,18 @@ export interface DetectionResult {
 /**
  * Run all regex rules over the text and return raw spans.
  * The engine handles overlap reconciliation downstream.
+ *
+ * Implementation note
+ * -------------------
+ * We deliberately keep the per-rule matchAll loop (rather than a combined
+ * alternation regex) because it lets every rule fire INDEPENDENTLY. mergeSpans
+ * then resolves overlaps by priority. A single alternation regex would advance
+ * past a low-priority broad match (e.g. POSTCODE_EU swallowing "CP… ") and
+ * never give a higher-priority narrow rule starting inside that span the
+ * chance to fire — a correctness regression caught by the synthetic Denmark
+ * CPR test. The per-rule loop remains the right shape; what was expensive
+ * about the original (the IDENTIFIER_RULES.find call inside the merge inner
+ * loop) is fixed below by PRIORITY_BY_LABEL.
  */
 export function runRules(text: string): Span[] {
   const spans: Span[] = [];
@@ -47,11 +59,6 @@ export function runRules(text: string): Span[] {
       // alternate between capture groups (e.g. AGE_OVER_89 has both
       // "age: X" and "X years old" forms) — pick the first non-undefined.
       const capture = m.slice(1).find((g) => g !== undefined);
-      // captureIdx: find the capture within the full match string. If the same
-      // substring appears twice in m[0] this picks the first occurrence, which
-      // is correct for all current patterns (captures always appear at the end:
-      // "MRN: 12345" → 12345, "age 99 years" → 99). lastIndexOf is used as a
-      // tiebreaker-safe fallback for patterns where the capture trails the match.
       const captureIdx = capture
         ? (m[0].lastIndexOf(capture) >= 0 ? m[0].lastIndexOf(capture) : m[0].indexOf(capture))
         : -1;
@@ -68,8 +75,12 @@ export function runRules(text: string): Span[] {
       }
 
       // Special filter: AGE_OVER_89 — only flag if the number is >= 90.
+      // AGE_OVER_89_PATTERN has two mutually exclusive capture groups:
+      //   group 1: "age: 95"  → digit string in m[1]
+      //   group 2: "95 years old" → digit string in m[2]
       if (rule.label === 'AGE_OVER_89') {
-        const num = parseInt(capture ?? m[0].match(/\d+/)?.[0] ?? '0', 10);
+        const ageStr = m[1] ?? m[2] ?? m[0].match(/\d+/)?.[0] ?? '0';
+        const num = parseInt(ageStr, 10);
         if (num < 90 || num > 130) continue;
       }
 
@@ -91,10 +102,19 @@ export function runRules(text: string): Span[] {
 }
 
 /**
- * Merge overlapping spans. Strategy:
- *  - Group spans by overlap.
- *  - Within an overlap group, pick the highest-priority rule. If tied, prefer
- *    the longest span. If still tied, prefer NER over rule.
+ * Merge overlapping spans into a union bounding box.
+ *
+ * When two spans overlap, we keep the span whose label has the higher priority
+ * (or the longer span / NER preference on tie) BUT we expand its start/end to
+ * cover the union of both spans.  This is critical: the old "pick winner and
+ * discard loser" approach dropped the non-overlapping prefix of the lower-
+ * priority span, leaving that text unredacted (PII leak).
+ *
+ * Example:
+ *   Span A: start=0, end=10, priority=70 (PHONE)
+ *   Span B: start=8, end=15, priority=88 (MRN)
+ *   Old result → [8..15] — characters 0-7 leaked!
+ *   New result → [0..15] with MRN label.
  */
 export function mergeSpans(spans: Span[]): Span[] {
   if (spans.length === 0) return [];
@@ -107,16 +127,16 @@ export function mergeSpans(spans: Span[]): Span[] {
       merged.push(s);
       continue;
     }
-    // Overlap — pick the higher-priority span as the label/source winner but
-    // expand the redaction region to the UNION of both spans so no PII falls
-    // in the gap between them (e.g. "John Smith" where "John" and "Smith" are
-    // detected by different rules with slightly different boundaries).
+    // Overlap — pick the winning label/source but span the full union.
+    // captureStart/captureEnd are cleared so the replacement engine always uses
+    // start/end (the full union) rather than a sub-range of the winner span.
     const winner = pickWinner(last, s);
     merged[merged.length - 1] = {
       ...winner,
       start: Math.min(last.start, s.start),
       end:   Math.max(last.end,   s.end),
-      text:  winner.text, // keep winner's label text; full span text is recomputed from source
+      captureStart: undefined,
+      captureEnd: undefined,
     };
   }
   return merged;
@@ -133,9 +153,27 @@ function pickWinner(a: Span, b: Span): Span {
   return a.source === 'ner' ? a : b;
 }
 
+/**
+ * Precomputed label→priority map. The previous implementation called
+ * IDENTIFIER_RULES.find(...) inside mergeSpans's inner loop, making span merge
+ * O(spans × rules). With ~30 rules and hundreds of spans on a long document
+ * that adds up. Computed once at module load.
+ *
+ * Note: a label can appear on multiple rules (e.g. IP has IPv4 and IPv6 at the
+ * same priority, NAME has 4 context-anchored patterns at different priorities).
+ * Keep the FIRST (highest) priority seen — matches the old .find() behaviour
+ * because IDENTIFIER_RULES is ordered priority-descending per-label cluster.
+ */
+const PRIORITY_BY_LABEL: Map<IdentifierLabel, number> = (() => {
+  const m = new Map<IdentifierLabel, number>();
+  for (const r of IDENTIFIER_RULES) {
+    if (!m.has(r.label)) m.set(r.label, r.priority);
+  }
+  return m;
+})();
+
 function priorityOf(span: Span): number {
-  const rule = IDENTIFIER_RULES.find((r) => r.label === span.label);
-  return rule?.priority ?? 50;
+  return PRIORITY_BY_LABEL.get(span.label) ?? 50;
 }
 
 /**
