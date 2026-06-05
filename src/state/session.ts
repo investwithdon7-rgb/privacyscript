@@ -6,6 +6,7 @@
  */
 
 import type { Mode } from '@/lib/constants';
+import type { ComplianceProfileId } from '@/lib/constants';
 import type { RecordFormat } from '@/engine/ingest';
 import type { DetectionResult } from '@/engine/detect';
 import type { ReplacementResult } from '@/engine/replace';
@@ -15,15 +16,39 @@ import type { AuditLog } from '@/engine/output';
 import type { SessionSecret } from '@/engine/crypto';
 import type { DocxOutputFormat } from '@/formats/docx';
 import type { ScanProgress } from '@/formats/pdf-scanned';
+import type {
+  ComplianceJurisdiction,
+  ComplianceReport,
+} from '@/engine/compliance';
 
 export interface SessionState {
   mode: Mode | null;
+  complianceProfile: ComplianceProfileId;
+  complianceJurisdiction: ComplianceJurisdiction;
+  complianceCheck: ComplianceReport | null;
+  uploadedFile: File | null;
   filename: string | null;
   format: RecordFormat | null;
   originalText: string | null;
   originalSize: number;
   detection: DetectionResult | null;
   quasiToRedact: Set<string>;
+  /**
+   * Per-span decisions for uncertain NER detections (confidence 0.5–0.85).
+   * true = user confirmed (include in redaction), false = dismissed (skip).
+   * Key = `${span.start}:${span.end}:${span.label}`.
+   */
+  uncertainSpanDecisions: Record<string, boolean>;
+  /**
+   * Spans the user manually added via the span editor.
+   * These are merged into the active span list before the replace pass.
+   */
+  userAddedSpans: import('@/engine/detect').Span[];
+  /**
+   * Keys of detected spans the user manually dismissed (false-positive removal).
+   * Key = `${span.start}:${span.end}:${span.label}`.
+   */
+  userDismissedSpanKeys: Set<string>;
   replacement: ReplacementResult | null;
   risk: RiskAssessment | null;
   validation: ValidationResult | null;
@@ -50,12 +75,19 @@ export interface SessionState {
 
 const INITIAL: SessionState = {
   mode: null,
+  complianceProfile: 'GDPR_PSEUDO',
+  complianceJurisdiction: 'GENERAL',
+  complianceCheck: null,
+  uploadedFile: null,
   filename: null,
   format: null,
   originalText: null,
   originalSize: 0,
   detection: null,
   quasiToRedact: new Set(),
+  uncertainSpanDecisions: {},
+  userAddedSpans: [],
+  userDismissedSpanKeys: new Set(),
   replacement: null,
   risk: null,
   validation: null,
@@ -85,7 +117,15 @@ export function updateSession(patch: Partial<SessionState>): void {
 }
 
 export function resetSession(): void {
-  state = { ...INITIAL, quasiToRedact: new Set() };
+  state = {
+    ...INITIAL,
+    quasiToRedact: new Set(),
+    uncertainSpanDecisions: {},
+    userAddedSpans: [],
+    userDismissedSpanKeys: new Set(),
+    complianceCheck: null,
+    uploadedFile: null,
+  };
   for (const l of listeners) l(state);
 }
 

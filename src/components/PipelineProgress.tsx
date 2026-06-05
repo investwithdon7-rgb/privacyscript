@@ -26,7 +26,7 @@ export function PipelineProgress({ stageIndex }: PipelineProgressProps) {
               }}
             />
             <span
-              className={`mono text-[10px] mt-2 uppercase tracking-wider ${
+              className={`hidden lg:block mono text-[10px] mt-2 uppercase tracking-wider ${
                 state === 'pending'
                   ? 'text-[color:var(--color-muted)]'
                   : 'text-white'

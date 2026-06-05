@@ -5,9 +5,12 @@ import { useEffect } from 'react';
 import { Brand } from '@/components/Brand';
 import { PipelineProgress } from '@/components/PipelineProgress';
 import { QuasiIdentifierReview } from '@/components/QuasiIdentifierReview';
+import { UncertainDetectionsPanel } from '@/components/UncertainDetectionsPanel';
+import { SpanEditor } from '@/components/SpanEditor';
 import { useSession } from '@/hooks/useSession';
 import { updateSession } from '@/state/session';
 import { finalise } from '@/hooks/useDeidentification';
+import type { Span } from '@/engine/detect';
 
 export default function ProcessPage() {
   const router = useRouter();
@@ -33,6 +36,56 @@ export default function ProcessPage() {
   };
 
   const confirmQuasi = () => updateSession({ quasiConfirmed: true });
+
+  // ── Uncertain span decisions ──────────────────────────────────────────
+  const handleUncertainDecide = (key: string, confirmed: boolean) => {
+    updateSession({
+      uncertainSpanDecisions: {
+        ...s.uncertainSpanDecisions,
+        [key]: confirmed,
+      },
+    });
+  };
+
+  // When the user clicks "Done — continue" on the uncertain panel, we also
+  // auto-dismiss any spans that still have no decision (treat as rejected).
+  const handleUncertainConfirmAll = () => {
+    const auto: Record<string, boolean> = { ...s.uncertainSpanDecisions };
+    for (const sp of s.detection?.uncertainSpans ?? []) {
+      const key = `${sp.start}:${sp.end}:${sp.label}`;
+      if (auto[key] === undefined) auto[key] = false;
+    }
+    updateSession({ uncertainSpanDecisions: auto });
+  };
+
+  // ── Manual span editor ────────────────────────────────────────────────
+  const handleAddSpan = (span: Span) => {
+    updateSession({ userAddedSpans: [...s.userAddedSpans, span] });
+  };
+
+  const handleDismissSpan = (key: string) => {
+    const next = new Set(s.userDismissedSpanKeys);
+    next.add(key);
+    updateSession({ userDismissedSpanKeys: next });
+  };
+
+  const handleRestoreSpan = (key: string) => {
+    const next = new Set(s.userDismissedSpanKeys);
+    next.delete(key);
+    updateSession({ userDismissedSpanKeys: next });
+  };
+
+  // All active detected spans (direct + quasi, minus dismissed, plus user-added).
+  const allDetectedSpans = s.detection
+    ? [...s.detection.spans, ...s.detection.quasiSpans, ...s.userAddedSpans]
+    : [];
+
+  // Has the user resolved all uncertain span decisions?
+  const uncertainResolved =
+    !s.detection?.uncertainSpans?.length ||
+    s.detection.uncertainSpans.every(
+      (sp) => s.uncertainSpanDecisions[`${sp.start}:${sp.end}:${sp.label}`] !== undefined
+    );
 
   return (
     <main className="min-h-screen max-w-5xl mx-auto px-6">
@@ -84,6 +137,7 @@ export default function ProcessPage() {
 
         {s.detection ? (
           <>
+            {/* Detection summary */}
             <div className="mt-8 surface rounded-2xl p-6">
               <div className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)] mb-2">
                 Detection summary
@@ -91,6 +145,11 @@ export default function ProcessPage() {
               <div className="text-2xl font-bold">
                 {s.detection.spans.length + s.detection.quasiSpans.length} identifiers detected
               </div>
+              {(s.detection.uncertainSpans?.length ?? 0) > 0 && (
+                <div className="mt-2 text-sm" style={{ color: 'var(--color-warning)' }}>
+                  + {s.detection.uncertainSpans!.length} uncertain detections awaiting review
+                </div>
+              )}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-4">
                 {Object.entries(s.detection.counts).map(([label, count]) => (
                   <div key={label} className="surface-2 rounded-lg px-3 py-2">
@@ -103,12 +162,37 @@ export default function ProcessPage() {
               </div>
             </div>
 
-            <QuasiIdentifierReview
-              quasiSpans={s.detection.quasiSpans}
-              redactSet={s.quasiToRedact}
-              onToggle={toggleQuasi}
-              onConfirm={confirmQuasi}
-            />
+            {/* Phase 1.2: Uncertain NER detections panel */}
+            {(s.detection.uncertainSpans?.length ?? 0) > 0 && (
+              <UncertainDetectionsPanel
+                spans={s.detection.uncertainSpans!}
+                decisions={s.uncertainSpanDecisions}
+                onDecide={handleUncertainDecide}
+                onConfirmAll={handleUncertainConfirmAll}
+              />
+            )}
+
+            {/* Phase 1.3: Manual span editor — only show once uncertain panel is resolved */}
+            {uncertainResolved && s.originalText && (
+              <SpanEditor
+                text={s.originalText}
+                spans={allDetectedSpans}
+                dismissedKeys={s.userDismissedSpanKeys}
+                onAddSpan={handleAddSpan}
+                onDismissSpan={handleDismissSpan}
+                onRestoreSpan={handleRestoreSpan}
+              />
+            )}
+
+            {/* Quasi-identifier review + confirm */}
+            {uncertainResolved && (
+              <QuasiIdentifierReview
+                quasiSpans={s.detection.quasiSpans}
+                redactSet={s.quasiToRedact}
+                onToggle={toggleQuasi}
+                onConfirm={confirmQuasi}
+              />
+            )}
           </>
         ) : (
           <div className="mt-8 text-[color:var(--color-muted)]">Running detection…</div>

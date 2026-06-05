@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import type { Mode } from '@/lib/constants';
-import { downloadBlob, downloadJSON, downloadText } from '@/engine/output';
+import { downloadBlob, downloadJSON, downloadText, generateComplianceReportPdf } from '@/engine/output';
 import { encryptKeyFile } from '@/engine/crypto';
 import { useSession } from '@/hooks/useSession';
 import { updateSession } from '@/state/session';
@@ -17,6 +17,7 @@ const FORMAT_EXT: Record<string, string> = {
   PDF_TYPED: 'pdf',
   PDF_SCANNED: 'pdf',
   CSV: 'csv',
+  DICOM: 'dcm',
 };
 
 const MIME: Record<string, string> = {
@@ -27,6 +28,7 @@ const MIME: Record<string, string> = {
   PDF_TYPED: 'application/pdf',
   PDF_SCANNED: 'application/pdf',
   CSV: 'text/csv',
+  DICOM: 'application/dicom',
 };
 
 export function DownloadPanel({ mode }: { mode: Mode }) {
@@ -49,7 +51,10 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
 
   const downloadRecord = () => {
     const filename = `${baseName}.deidentified.${ext}`;
-    if (s.deidentifiedBytes) {
+    // DICOM: the cleaned binary is stored in sourceBytes (set by the ingest step)
+    if (s.format === 'DICOM' && s.sourceBytes) {
+      downloadBlob(new Blob([s.sourceBytes], { type: 'application/dicom' }), filename);
+    } else if (s.deidentifiedBytes) {
       downloadBlob(new Blob([s.deidentifiedBytes], { type: mime }), filename);
     } else if (s.deidentifiedOutput !== null) {
       downloadText(s.deidentifiedOutput, filename, mime);
@@ -57,6 +62,20 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
   };
 
   const downloadAudit = () => downloadJSON(s.audit, `${baseName}.audit.json`);
+
+  const downloadComplianceReport = async () => {
+    if (!s.audit) return;
+    const nerLeakCount = s.validation?.nerLeaks?.length ?? 0;
+    const bytes = await generateComplianceReportPdf(
+      s.audit,
+      nerLeakCount,
+      baseName
+    );
+    downloadBlob(
+      new Blob([bytes], { type: 'application/pdf' }),
+      `${baseName}.compliance-report.pdf`
+    );
+  };
 
   const onDocxFormatChange = async (next: DocxOutputFormat) => {
     updateSession({ docxFormat: next });
@@ -130,12 +149,15 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
         </div>
       ) : null}
 
-      <div className="grid md:grid-cols-2 gap-4">
+      <div className="grid md:grid-cols-3 gap-4">
         <button onClick={downloadRecord} className="btn-primary">
           De-identified record (.{ext})
         </button>
         <button onClick={downloadAudit} className="btn-secondary">
           Audit log (.json)
+        </button>
+        <button onClick={() => void downloadComplianceReport()} className="btn-secondary">
+          Compliance report (.pdf)
         </button>
       </div>
 

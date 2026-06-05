@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { Brand } from '@/components/Brand';
 import { RiskBadge } from '@/components/RiskBadge';
 import { useSession } from '@/hooks/useSession';
+import { COMPLIANCE_PROFILES } from '@/lib/constants';
 
 export default function ReviewPage() {
   const router = useRouter();
@@ -42,6 +43,10 @@ export default function ReviewPage() {
   const canProceed =
     s.risk.level !== 'HIGH' || acknowledged;
 
+  const profile = COMPLIANCE_PROFILES[s.complianceProfile ?? 'GDPR_PSEUDO'];
+  const nerLeaks = s.validation?.nerLeaks ?? [];
+  const hasNerLeaks = nerLeaks.length > 0;
+
   return (
     <main className="min-h-screen max-w-5xl mx-auto px-6">
       <Brand subtitle="Risk assessment" />
@@ -49,7 +54,10 @@ export default function ReviewPage() {
       <section className="mt-10">
         <div className="flex items-center justify-between flex-wrap gap-3">
           <h1 className="text-3xl font-bold">Risk assessment</h1>
-          <RiskBadge level={s.risk.level} />
+          <div className="flex items-center gap-3">
+            <span className="tag mono text-xs">{profile.label}</span>
+            <RiskBadge level={s.risk.level} />
+          </div>
         </div>
 
         {s.error ? (
@@ -64,12 +72,26 @@ export default function ReviewPage() {
           </div>
         ) : null}
 
+        {/* Primary stats */}
         <div className="surface rounded-2xl p-6 mt-6">
-          <div className="grid md:grid-cols-3 gap-6">
+          <div className="grid md:grid-cols-4 gap-6">
             <Stat
               label="k-anonymity"
               value={String(s.risk.kAnonymity)}
-              hint={`Threshold ${s.risk.kAnonymity >= 5 ? 'met' : 'not met'}`}
+              hint={`Threshold ${s.risk.kAnonymity >= profile.kThreshold ? 'met' : 'not met'} (k≥${profile.kThreshold})`}
+              tone={s.risk.kAnonymity >= profile.kThreshold ? 'good' : 'bad'}
+            />
+            <Stat
+              label="l-diversity"
+              value={s.risk.lDiversity >= 99 ? '∞' : String(s.risk.lDiversity)}
+              hint={
+                s.risk.lDiversity >= 99
+                  ? 'No sensitive attrs retained'
+                  : s.risk.lDiversity < 2
+                  ? 'Low — sensitive attr exposed'
+                  : 'Adequate'
+              }
+              tone={s.risk.lDiversity < 2 && s.risk.lDiversity < 99 ? 'bad' : 'good'}
             />
             <Stat
               label="Identifiers redacted"
@@ -83,10 +105,10 @@ export default function ReviewPage() {
                 s.validation == null
                   ? 'Still running…'
                   : s.validation.passed
-                  ? `No original identifier in output${s.validation.leaks.length > 0 ? ` · ${s.validation.leaks.length} regex residual(s)` : ''}`
+                  ? `No original identifier in output${s.validation.leaks.length > 0 ? ` · ${s.validation.leaks.length} regex residual(s)` : ''}${hasNerLeaks ? ` · ${nerLeaks.length} NER warning(s)` : ''}`
                   : `${s.validation.originalsLeaked.length} original(s) leaked verbatim`
               }
-              tone={s.validation == null ? 'neutral' : s.validation.passed ? 'good' : 'bad'}
+              tone={s.validation == null ? 'neutral' : s.validation.passed ? (hasNerLeaks ? 'neutral' : 'good') : 'bad'}
             />
           </div>
 
@@ -102,6 +124,36 @@ export default function ReviewPage() {
           </div>
         </div>
 
+        {/* NER second-pass leak warnings */}
+        {hasNerLeaks && (
+          <div
+            className="mt-6 p-4 rounded-xl"
+            style={{ background: 'rgba(245,158,11,0.1)', border: '1px solid var(--color-warning)' }}
+          >
+            <div className="font-semibold mb-1" style={{ color: 'var(--color-warning)' }}>
+              NER second-pass detected {nerLeaks.length} potential surviving name{nerLeaks.length === 1 ? '' : 's'} or location{nerLeaks.length === 1 ? '' : 's'}
+            </div>
+            <p className="text-sm text-[color:var(--color-muted)] mb-3">
+              These entities were found by the NER model in the <em>de-identified</em> output.
+              They may be false positives (common words, medical terms), or they may be
+              identifiers the engine missed. Review before sharing.
+            </p>
+            <ul className="flex flex-wrap gap-2">
+              {nerLeaks.slice(0, 12).map((s, i) => (
+                <li key={i} className="tag mono text-xs">
+                  &ldquo;{s.text}&rdquo; <span className="text-[color:var(--color-muted)]">({s.label})</span>
+                </li>
+              ))}
+              {nerLeaks.length > 12 && (
+                <li className="tag mono text-xs text-[color:var(--color-muted)]">
+                  +{nerLeaks.length - 12} more
+                </li>
+              )}
+            </ul>
+          </div>
+        )}
+
+        {/* Identifier breakdown */}
         <div className="surface rounded-2xl p-6 mt-6">
           <div className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)] mb-3">
             Identifier breakdown
@@ -136,8 +188,8 @@ export default function ReviewPage() {
               HIGH risk
             </div>
             <p className="text-sm mt-1 text-[color:var(--color-muted)]">
-              k-anonymity is below the threshold. You may proceed only if you accept the residual
-              re-identification risk.
+              k-anonymity is below the threshold ({profile.kThreshold}) for {profile.label}.
+              You may proceed only if you accept the residual re-identification risk.
             </p>
             <label className="flex items-center gap-2 mt-3 text-sm">
               <input
@@ -175,12 +227,8 @@ export default function ReviewPage() {
             onClick={() => router.push('/output/')}
             className="btn-primary"
             disabled={
-              // Blocked until all pipeline stages have completed.
               s.stageIndex < 6 ||
-              // Blocked if risk is HIGH and user hasn't acknowledged.
               !canProceed ||
-              // Blocked only on verbatim original identifier leaks (hard constraint).
-              // Regex residuals (s.validation.leaks) are informational warnings only.
               (s.validation != null && !s.validation.passed)
             }
           >

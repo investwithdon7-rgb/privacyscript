@@ -61,7 +61,7 @@ describe('synthetic FHIR bundle', () => {
       mode: 'ANONYMISE',
       quasiToRedact: new Set(['RARE_DISEASE_ICD']),
     });
-    const v = validate(result.text, {
+    const v = await validate(result.text, {
       mode: 'ANONYMISE',
       originalIdentifiers: Object.keys(result.mapping),
     });
@@ -104,7 +104,7 @@ describe('synthetic CSV', () => {
       mode: 'ANONYMISE',
       quasiToRedact: new Set(['RARE_DISEASE_ICD', 'INSTITUTION', 'OCCUPATION', 'ETHNICITY']),
     });
-    const v = validate(result.text, {
+    const v = await validate(result.text, {
       mode: 'ANONYMISE',
       originalIdentifiers: Object.keys(result.mapping),
     });

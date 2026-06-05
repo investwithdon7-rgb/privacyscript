@@ -27,6 +27,12 @@ export interface DetectionResult {
   counts: Record<string, number>;
   /** Quasi-identifier spans that need user confirmation before redaction. */
   quasiSpans: Span[];
+  /**
+   * NER-detected spans with confidence between 0.5 and 0.85 that are not yet
+   * committed to the active span list. The user reviews these per-span before
+   * the replace pass runs.
+   */
+  uncertainSpans: Span[];
 }
 
 /**
@@ -179,10 +185,28 @@ function priorityOf(span: Span): number {
 /**
  * Full detection pass for a text string. Combines rule output (and NER output
  * if provided), reconciles overlaps, and separates direct from quasi spans.
+ *
+ * NER confidence bucketing:
+ *  ≥ 0.85 → auto-accepted (merged with rule spans)
+ *  0.5 – 0.84 → uncertain (returned separately for per-span user review)
+ *  < 0.5 → silently dropped (too noisy)
  */
 export function detect(text: string, nerSpans: Span[] = []): DetectionResult {
+  const NER_CONFIDENT_THRESHOLD = 0.85;
+  const NER_UNCERTAIN_THRESHOLD = 0.5;
+
+  // Split NER spans by confidence tier.
+  const confidentNer = nerSpans.filter(
+    (s) => (s.confidence ?? 1) >= NER_CONFIDENT_THRESHOLD
+  );
+  const uncertainNer = nerSpans.filter(
+    (s) =>
+      (s.confidence ?? 1) >= NER_UNCERTAIN_THRESHOLD &&
+      (s.confidence ?? 1) < NER_CONFIDENT_THRESHOLD
+  );
+
   const ruleSpans = runRules(text);
-  const all = [...ruleSpans, ...nerSpans];
+  const all = [...ruleSpans, ...confidentNer];
   const merged = mergeSpans(all);
 
   const direct = merged.filter((s) => s.category !== 'QUASI');
@@ -197,5 +221,6 @@ export function detect(text: string, nerSpans: Span[] = []): DetectionResult {
     spans: direct,
     counts,
     quasiSpans: quasi,
+    uncertainSpans: uncertainNer,
   };
 }

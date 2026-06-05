@@ -42,5 +42,5 @@ if (-not $PagesOnly) {
 
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
-Write-Host "  Pages preview: https://privacyscript.pages.dev/  (assets 404 — only the router URL renders)"
+Write-Host "  Pages preview: https://privacyscript.pages.dev/  (assets 404 - only the router URL renders)"
 Write-Host "  Public URL:    https://tekdruid.com/privacyscript/"

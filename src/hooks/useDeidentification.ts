@@ -14,7 +14,16 @@ import type { PdfIngest, PdfRedaction } from '@/formats/pdf-typed';
 import type { CsvIngest, CsvLeaf } from '@/formats/csv';
 import type { ScannedPdfIngest, ScannedRedaction, ScanProgress } from '@/formats/pdf-scanned';
 import { generateSessionSecret } from '@/engine/crypto';
-import { K_ANONYMITY_THRESHOLD } from '@/lib/constants';
+import {
+  COMPLIANCE_PROFILES,
+  K_ANONYMITY_THRESHOLD,
+  type ComplianceProfileId,
+  type Mode,
+} from '@/lib/constants';
+import {
+  assessCompliance,
+  type ComplianceJurisdiction,
+} from '@/engine/compliance';
 import { getSession, updateSession } from '@/state/session';
 
 /**
@@ -23,7 +32,7 @@ import { getSession, updateSession } from '@/state/session';
  * catalogue matches across this character, so spans cannot leak between
  * leaves.
  */
-const LEAF_DELIM = '';
+const LEAF_DELIM = '\u001F';
 
 /**
  * Run the ingest + detect stages for a staged file. Pipeline is split here so
@@ -134,6 +143,42 @@ export async function ingestAndDetect(file: File): Promise<void> {
         text = scanned.fullText;
         break;
       }
+      case 'DICOM': {
+        // DICOM: we de-identify at the tag level first (ps3.15 Annex E), then
+        // also run NER on the extracted tag text values as a second-pass catch.
+        sourceBytes = await file.arrayBuffer();
+        const { deidentifyDicom } = await import('@/formats/dicom');
+        const dicomResult = await deidentifyDicom(sourceBytes);
+        // The cleaned bytes become the output for the binary download.
+        parsedOriginal = dicomResult;
+        // Build a text representation for NER detection (values were already blanked,
+        // so the text here is used only to surface what WAS in the file pre-clean).
+        // We extract readable text from the ORIGINAL buffer for the detect pass.
+        const { default: dicomParser } = await import('dicom-parser');
+        const origBuf = new Uint8Array(sourceBytes);
+        let dicomText = '';
+        try {
+          const ds = dicomParser.parseDicom(origBuf);
+          const TAG_NAMES: Record<string, string> = {
+            '00100010': 'PatientName', '00100020': 'PatientID',
+            '00100030': 'PatientBirthDate', '00100040': 'PatientSex',
+            '00080080': 'InstitutionName', '00080090': 'ReferringPhysicianName',
+            '00101040': 'PatientAddress', '00102160': 'EthnicGroup',
+          };
+          const lines: string[] = [];
+          for (const [tag, name] of Object.entries(TAG_NAMES)) {
+            try {
+              const val = ds.string(`x${tag}`);
+              if (val) lines.push(`${name}: ${val}`);
+            } catch { /* tag absent */ }
+          }
+          dicomText = lines.join('\n') || '(no readable tags)';
+        } catch { dicomText = '(DICOM parse error)'; }
+        // Store cleaned bytes for download; detect on original tag text.
+        sourceBytes = dicomResult.bytes.buffer;
+        text = dicomText;
+        break;
+      }
       default:
         throw new Error(`Unknown format for ${file.name}.`);
     }
@@ -152,13 +197,24 @@ export async function ingestAndDetect(file: File): Promise<void> {
     const nerSpans = await runClinicalNER(text);
     const detection = detect(text, nerSpans);
 
-    // Default-on suppression for Orphanet "auto" tier rare disease codes.
+    // Default-on suppression for quasi-identifiers.
     const autoRedact = new Set<string>();
-    for (const q of detection.quasiSpans) {
-      if (q.label === 'RARE_DISEASE_ICD' && q.rareTier === 'auto') {
-        autoRedact.add('RARE_DISEASE_ICD');
+    const session = getSession();
+    const { COMPLIANCE_PROFILES } = await import('@/lib/constants');
+    const profile = COMPLIANCE_PROFILES[session.complianceProfile ?? 'GDPR_PSEUDO'];
+
+    if (profile?.suppressAllQuasi) {
+      for (const q of detection.quasiSpans) {
+        autoRedact.add(q.label);
+      }
+    } else {
+      for (const q of detection.quasiSpans) {
+        if (q.label === 'RARE_DISEASE_ICD' && q.rareTier === 'auto') {
+          autoRedact.add('RARE_DISEASE_ICD');
+        }
       }
     }
+
     updateSession({
       detection,
       quasiToRedact: autoRedact,
@@ -167,6 +223,106 @@ export async function ingestAndDetect(file: File): Promise<void> {
   } catch (err) {
     updateSession({ error: (err as Error).message });
   }
+}
+
+export async function runComplianceCheck(
+  file: File,
+  jurisdiction: ComplianceJurisdiction
+): Promise<void> {
+  updateSession({
+    mode: null,
+    complianceJurisdiction: jurisdiction,
+    complianceCheck: null,
+    uploadedFile: file,
+    filename: file.name,
+    format: null,
+    originalText: null,
+    originalSize: 0,
+    detection: null,
+    parsedOriginal: null,
+    sourceBytes: null,
+    scanProgress: null,
+    quasiConfirmed: false,
+    quasiToRedact: new Set(),
+    uncertainSpanDecisions: {},
+    userAddedSpans: [],
+    userDismissedSpanKeys: new Set(),
+    replacement: null,
+    risk: null,
+    validation: null,
+    audit: null,
+    deidentifiedOutput: null,
+    deidentifiedBytes: null,
+    error: null,
+  });
+
+  await ingestAndDetect(file);
+
+  const s = getSession();
+  if (s.error || !s.detection || s.originalText === null) return;
+
+  const complianceCheck = assessCompliance({
+    jurisdiction,
+    text: s.originalText,
+    detection: s.detection,
+  });
+
+  updateSession({
+    complianceJurisdiction: jurisdiction,
+    complianceCheck,
+    stageIndex: 2,
+  });
+}
+
+export async function startDeidentificationFromCompliance(
+  mode: Mode
+): Promise<void> {
+  const s = getSession();
+  if (!s.detection || s.originalText === null) return;
+
+  const complianceProfile = profileForComplianceAction(
+    s.complianceJurisdiction,
+    mode
+  );
+  const profile = COMPLIANCE_PROFILES[complianceProfile];
+  const quasiToRedact = new Set<string>();
+
+  if (profile.suppressAllQuasi || mode === 'ANONYMISE') {
+    for (const q of s.detection.quasiSpans) {
+      quasiToRedact.add(q.label);
+    }
+  } else {
+    for (const q of s.detection.quasiSpans) {
+      if (q.label === 'RARE_DISEASE_ICD' && q.rareTier === 'auto') {
+        quasiToRedact.add(q.label);
+      }
+    }
+  }
+
+  updateSession({
+    mode,
+    complianceProfile,
+    quasiToRedact,
+    quasiConfirmed: false,
+    replacement: null,
+    risk: null,
+    validation: null,
+    audit: null,
+    deidentifiedOutput: null,
+    deidentifiedBytes: null,
+    stageIndex: 2,
+    error: null,
+  });
+}
+
+function profileForComplianceAction(
+  jurisdiction: ComplianceJurisdiction,
+  mode: Mode
+): ComplianceProfileId {
+  if (mode === 'PSEUDONYMISE') return 'GDPR_PSEUDO';
+  if (jurisdiction === 'US') return 'HIPAA_SAFE_HARBOR';
+  if (jurisdiction === 'EU') return 'EHDS_SECONDARY';
+  return 'GDPR_ANON';
 }
 
 /**
@@ -213,10 +369,27 @@ export async function finalise(): Promise<void> {
       updateSession({ secret });
     }
 
+    // Merge HITL edits into the active span lists before replacement.
+    // 1. Remove spans the user dismissed as false positives.
+    const activeSpans = s.detection.spans.filter(
+      (sp) => !s.userDismissedSpanKeys.has(`${sp.start}:${sp.end}:${sp.label}`)
+    );
+    const activeQuasi = s.detection.quasiSpans.filter(
+      (sp) => !s.userDismissedSpanKeys.has(`${sp.start}:${sp.end}:${sp.label}`)
+    );
+
+    // 2. Add spans the user confirmed from the uncertain NER panel.
+    const confirmedUncertain = (s.detection.uncertainSpans ?? []).filter(
+      (sp) => s.uncertainSpanDecisions[`${sp.start}:${sp.end}:${sp.label}`] === true
+    );
+
+    // 3. Merge in spans the user manually drew in the span editor.
+    const allSpans = [...activeSpans, ...s.userAddedSpans, ...confirmedUncertain];
+
     const replacement = await replaceSpans(
       s.originalText,
-      s.detection.spans,
-      s.detection.quasiSpans,
+      allSpans,
+      activeQuasi,
       {
         mode: s.mode,
         secret: secret ?? undefined,
@@ -226,20 +399,24 @@ export async function finalise(): Promise<void> {
     updateSession({ replacement, stageIndex: 3 });
 
     // Stage 4: RISK
-    const retainedQuasi = s.detection.quasiSpans.filter(
+    const retainedQuasi = activeQuasi.filter(
       (q) => !s.quasiToRedact.has(q.label)
     );
+    const { COMPLIANCE_PROFILES } = await import('@/lib/constants');
+    const profile = COMPLIANCE_PROFILES[s.complianceProfile ?? 'GDPR_PSEUDO'];
     const risk = assessRisk({
       detectedSpans: s.detection.spans,
       retainedQuasiSpans: retainedQuasi,
       recordCount: 1,
+      kThreshold: profile?.kThreshold,
     });
     updateSession({ risk, stageIndex: 4 });
 
     // Stage 5: VALIDATE
-    const validation = validate(replacement.text, {
+    const validation = await validate(replacement.text, {
       mode: s.mode,
       originalIdentifiers: Object.keys(replacement.mapping),
+      nerRunner: runClinicalNER,
     });
     updateSession({ validation, stageIndex: 5 });
 
@@ -258,6 +435,7 @@ export async function finalise(): Promise<void> {
       replacementsMade: replacement.replacements.length,
       risk,
       validationPassed: validation.passed,
+      complianceProfile: s.complianceProfile ?? 'GDPR_PSEUDO',
       notes: validation.passed
         ? undefined
         : [`${validation.leaks.length} potential leak(s) detected — review before sharing.`],

@@ -3,35 +3,38 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { Brand } from '@/components/Brand';
-import { ModeSelector } from '@/components/ModeSelector';
 import { DropZone } from '@/components/DropZone';
 import { NerBanner } from '@/components/NerBanner';
+import { ComplianceModeSelector } from '@/components/ComplianceModeSelector';
 import type { Mode } from '@/lib/constants';
+import type { ComplianceProfileId } from '@/lib/constants';
+import { COMPLIANCE_PROFILES, DEFAULT_COMPLIANCE_PROFILE } from '@/lib/constants';
 import { resetSession, updateSession } from '@/state/session';
 import { ingestAndDetect } from '@/hooks/useDeidentification';
 import { ensureNerLoaded } from '@/engine/ner';
 
 export default function LandingPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<Mode | null>(null);
+  const [profileId, setProfileId] = useState<ComplianceProfileId>(DEFAULT_COMPLIANCE_PROFILE);
+  const [showProfiles, setShowProfiles] = useState(false);
+  const [activeJob, setActiveJob] = useState<'check' | 'deidentify' | null>(null);
 
-  // Pre-warm the NER model the moment the landing page mounts. The 50 MB
-  // download happens while the user is choosing a mode + picking a file, so
-  // by the time they click "process" the model is already cached in
-  // IndexedDB. Fire-and-forget — `ensureNerLoaded` is internally memoised and
-  // swallows its own errors, so if the model can't load the engine simply
-  // falls back to regex-only detection on Screen 2.
+  // Pre-warm the NER model while the user is setting up.
   useEffect(() => {
     void ensureNerLoaded();
   }, []);
 
+  const profile = COMPLIANCE_PROFILES[profileId];
+  const effectiveMode: Mode = profile.recommendedMode;
+
+  const handleProfileChange = (id: ComplianceProfileId) => {
+    setProfileId(id);
+  };
+
   const onFile = async (file: File) => {
     resetSession();
-    // Set filename + mode BEFORE navigating so the process page's redirect
-    // guard (`!s.filename`) does not fire while ingestAndDetect is still running.
-    updateSession({ mode, filename: file.name });
+    updateSession({ mode: effectiveMode, filename: file.name, complianceProfile: profileId });
     router.push('/process/');
-    // Kick off detection — Screen 2 listens to session state.
     void ingestAndDetect(file);
   };
 
@@ -50,24 +53,116 @@ export default function LandingPage() {
           research, or feeding to AI tools.
         </p>
 
-        <div className="mt-10">
-          <h2 className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)]">
-            Step 1 — choose mode
-          </h2>
-          <ModeSelector value={mode} onChange={setMode} />
+        <div className="mt-12 grid md:grid-cols-2 gap-4">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveJob('check');
+              router.push('/check/');
+            }}
+            className="surface rounded-2xl p-6 text-left hover:border-[#4F46E5] transition-colors"
+          >
+            <div className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)]">
+              1. Check Compliance
+            </div>
+            <h2 className="text-2xl font-bold mt-3">Is this safe to share or upload to AI?</h2>
+            <p className="text-sm text-[color:var(--color-muted)] mt-3 leading-relaxed">
+              Scan for PII, PHI, health data and jurisdiction-specific AI upload risk before
+              distributing a document.
+            </p>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveJob('deidentify')}
+            className="surface rounded-2xl p-6 text-left hover:border-[#4F46E5] transition-colors"
+          >
+            <div className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)]">
+              2. De-identify
+            </div>
+            <h2 className="text-2xl font-bold mt-3">Make the document safer.</h2>
+            <p className="text-sm text-[color:var(--color-muted)] mt-3 leading-relaxed">
+              Anonymise for external sharing and AI upload, or pseudonymise for internal
+              research where you keep the re-identification key.
+            </p>
+          </button>
         </div>
 
-        <div className={`mt-10 transition-opacity ${mode ? '' : 'opacity-50 pointer-events-none'}`}>
+        {activeJob === null ? (
+          <div className="mt-8 surface rounded-xl px-5 py-4 text-sm text-[color:var(--color-muted)]">
+            Choose a main function to begin. If you are unsure whether a document is safe,
+            start with Check Compliance.
+          </div>
+        ) : null}
+
+        {activeJob === 'deidentify' ? (
+          <>
+        {/* Step 1: Compliance profile */}
+        <div className="mt-12">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)]">
+              Step 1 — choose regulatory target
+            </h2>
+            <button
+              type="button"
+              onClick={() => setShowProfiles((p) => !p)}
+              className="mono text-xs text-[color:var(--color-muted)] hover:text-white transition-colors"
+            >
+              {showProfiles ? '▲ hide' : '▼ show all'}
+            </button>
+          </div>
+
+          {!showProfiles ? (
+            // Collapsed chip showing active profile + auto-applied mode
+            <button
+              type="button"
+              onClick={() => setShowProfiles(true)}
+              className="surface rounded-xl px-5 py-3.5 text-left w-full hover:border-[#4F46E5] transition-colors group border border-[color:var(--color-border)]"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="font-semibold">{profile.label}</div>
+                  <div className="mono text-xs text-[color:var(--color-muted)] mt-0.5">
+                    {profile.regulation}
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  {/* Mode badge — shows what will be applied */}
+                  <span
+                    className="mono text-xs px-2.5 py-1 rounded-full font-semibold border"
+                    style={{
+                      background: effectiveMode === 'PSEUDONYMISE' ? 'rgba(79,70,229,0.15)' : 'rgba(124,58,237,0.15)',
+                      color: effectiveMode === 'PSEUDONYMISE' ? '#818CF8' : '#A78BFA',
+                      borderColor: effectiveMode === 'PSEUDONYMISE' ? 'rgba(79,70,229,0.4)' : 'rgba(124,58,237,0.4)',
+                    }}
+                  >
+                    {effectiveMode === 'PSEUDONYMISE' ? '🔑 Pseudonymise' : '🔒 Anonymise'}
+                  </span>
+                  <span className="mono text-xs text-[color:var(--color-muted)] group-hover:text-[#4F46E5] transition-colors">
+                    Change →
+                  </span>
+                </div>
+              </div>
+            </button>
+          ) : (
+            <ComplianceModeSelector value={profileId} onChange={handleProfileChange} />
+          )}
+        </div>
+
+        {/* Step 2: Upload / paste — renumbered from Step 3 */}
+        <div className="mt-10">
           <h2 className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)]">
-            Step 2 — upload a record
+            Step 2 — upload or paste a record
           </h2>
           <DropZone
-            accept=".txt,.json,.hl7,.pdf,.docx,.csv,.tsv"
-            disabled={!mode}
+            accept=".txt,.json,.hl7,.pdf,.docx,.csv,.tsv,.dcm,.dicom"
+            disabled={false}
             onFile={onFile}
           />
           <NerBanner />
         </div>
+          </>
+        ) : null}
 
         <ComplianceStrip />
       </section>
@@ -102,7 +197,12 @@ function Footer() {
     <footer className="mt-24 mb-12 pt-8 border-t border-[color:var(--color-border)] text-xs text-[color:var(--color-muted)] mono">
       <div className="flex flex-wrap gap-x-6 gap-y-2 justify-between">
         <span>PrivacyScript by TekDruid · client-side only · zero telemetry</span>
-        <span>v0.1 · {new Date().getUTCFullYear()}</span>
+        <div className="flex gap-4">
+          <a href="/privacyscript/batch/" className="hover:text-white transition-colors">
+            Batch processing →
+          </a>
+          <span>v0.2 · {new Date().getUTCFullYear()}</span>
+        </div>
       </div>
     </footer>
   );

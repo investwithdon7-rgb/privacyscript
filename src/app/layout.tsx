@@ -21,12 +21,39 @@ export const metadata: Metadata = {
   description:
     'De-identify health records in your browser. Nothing leaves your device. GDPR, HIPAA, EHDS, UK GDPR, NIS2.',
   robots: { index: true, follow: true },
+  manifest: '/privacyscript/manifest.json',
 };
+
+export function generateViewport() {
+  return {
+    themeColor: '#4F46E5',
+  };
+}
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${dmSans.variable} ${dmMono.variable}`}>
-      <body>{children}</body>
+      <head>
+        <link rel="manifest" href="/privacyscript/manifest.json" />
+        <meta name="theme-color" content="#4F46E5" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+      </head>
+      <body>
+        {children}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              if ('serviceWorker' in navigator) {
+                window.addEventListener('load', function() {
+                  navigator.serviceWorker.register('/privacyscript/sw.js')
+                    .catch(function() { /* SW registration failure is non-fatal */ });
+                });
+              }
+            `,
+          }}
+        />
+      </body>
     </html>
   );
 }

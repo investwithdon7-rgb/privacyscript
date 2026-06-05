@@ -8,6 +8,8 @@ dist/
 .DS_Store
 public/models/*.onnx
 public/pdf.worker.min.mjs
+public/tesseract/
+public/wasm/
 .cache/
 .wrangler/
 tsconfig.tsbuildinfo

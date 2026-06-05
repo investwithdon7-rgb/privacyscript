@@ -1,0 +1,27 @@
+{
+  "name": "PrivacyScript",
+  "short_name": "PrivacyScript",
+  "description": "De-identify health records in your browser. Nothing leaves your device.",
+  "start_url": "/privacyscript/",
+  "scope": "/privacyscript/",
+  "display": "standalone",
+  "background_color": "#0A0B14",
+  "theme_color": "#4F46E5",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/privacyscript/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/privacyscript/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "categories": ["medical", "productivity", "utilities"],
+  "lang": "en"
+}

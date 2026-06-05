@@ -6,6 +6,7 @@ export type RecordFormat =
   | 'PDF_SCANNED'
   | 'DOCX'
   | 'CSV'
+  | 'DICOM'
   | 'UNKNOWN';
 
 export interface IngestResult {
@@ -40,6 +41,7 @@ export function detectFormat(filename: string, content: string): RecordFormat {
   const ext = filename.split('.').pop()?.toLowerCase();
 
   if (ext === 'hl7') return 'HL7_V2';
+  if (ext === 'dcm' || ext === 'dicom') return 'DICOM';
   if (ext === 'json') {
     return looksLikeFhir(content) ? 'FHIR_R4' : 'TEXT';
   }
@@ -103,6 +105,9 @@ export function detectFormatByExt(filename: string): RecordFormat {
       return 'HL7_V2';
     case 'json':
       return 'FHIR_R4';
+    case 'dcm':
+    case 'dicom':
+      return 'DICOM';
     case 'pdf':
       return 'PDF_TYPED';
     case 'docx':

@@ -46,7 +46,7 @@ describe('end-to-end pipeline', () => {
       quasiToRedact: new Set(['RARE_DISEASE_ICD']),
     });
 
-    const v = validate(result.text, {
+    const v = await validate(result.text, {
       mode: 'PSEUDONYMISE',
       originalIdentifiers: Object.keys(result.mapping),
     });
@@ -68,7 +68,7 @@ describe('end-to-end pipeline', () => {
       mode: 'ANONYMISE',
       quasiToRedact: new Set(['RARE_DISEASE_ICD']),
     });
-    const v = validate(result.text, {
+    const v = await validate(result.text, {
       mode: 'ANONYMISE',
       originalIdentifiers: Object.keys(result.mapping),
     });

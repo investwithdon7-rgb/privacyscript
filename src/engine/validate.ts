@@ -6,6 +6,12 @@ export interface ValidationResult {
   leaks: Span[];
   /** Original identifier strings found verbatim in the de-identified output. */
   originalsLeaked: string[];
+  /**
+   * Entities detected by the NER second-pass on the de-identified output.
+   * These are warnings (not hard blocks) — they indicate names/locations that
+   * may have survived because no regex rule matched them.
+   */
+  nerLeaks: Span[];
 }
 
 interface ValidateOptions {
@@ -18,10 +24,17 @@ interface ValidateOptions {
    * originals to check for.
    */
   originalIdentifiers: string[];
+  /**
+   * Optional async NER runner. When provided, `validate` runs the NER model on
+   * the de-identified output as a second pass and reports surviving NAME / LOC
+   * entities that regex alone would have missed. This closes the gap where a
+   * person's name survives because it didn't match any regex rule.
+   */
+  nerRunner?: (text: string) => Promise<Span[]>;
 }
 
 /**
- * Post-processing validation. Two layers:
+ * Post-processing validation. Three layers:
  *
  * 1. Verbatim leak check: did any original identifier value (a mapping key)
  *    survive into the output? This is the hard constraint and applies in both
@@ -30,11 +43,15 @@ interface ValidateOptions {
  *    direct-identifier matches at all (every direct identifier is replaced by
  *    a placeholder). In pseudonymise mode, regex matches are expected
  *    (shifted dates, etc.) so the regex layer is informational only.
+ * 3. NER second-pass (when nerRunner provided): runs the NER model on the
+ *    de-identified output and surfaces surviving PER/LOC entities. These are
+ *    surfaced as warnings, not hard blocks, because the NER model can produce
+ *    false positives on common words.
  */
-export function validate(
+export async function validate(
   deidentifiedText: string,
   options: ValidateOptions
-): ValidationResult {
+): Promise<ValidationResult> {
   const originalsLeaked: string[] = [];
   for (const original of options.originalIdentifiers) {
     if (original.length < 4) continue; // skip very short strings to avoid noise
@@ -55,6 +72,24 @@ export function validate(
       .filter((s) => !isOwnToken(s.text));
   }
 
+  // NER second-pass: run the model on the de-identified output to catch names
+  // that survived because they didn't match any regex rule.
+  let nerLeaks: Span[] = [];
+  if (options.nerRunner) {
+    try {
+      const nerSpans = await options.nerRunner(deidentifiedText);
+      nerLeaks = nerSpans.filter(
+        (s) =>
+          (s.label === 'NAME' || s.label === 'ADDRESS_LINE') &&
+          !isOwnToken(s.text) &&
+          s.text.trim().length >= 3
+      );
+    } catch {
+      // NER second-pass failure is non-fatal — degrade gracefully.
+      nerLeaks = [];
+    }
+  }
+
   return {
     // Only verbatim original identifier leaks are a hard block.
     // Regex residuals (leaks) are surfaced as warnings — they are informational
@@ -63,6 +98,7 @@ export function validate(
     passed: originalsLeaked.length === 0,
     leaks,
     originalsLeaked,
+    nerLeaks,
   };
 }
 
