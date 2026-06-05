@@ -93,7 +93,7 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
       return;
     }
     if (!s.secret || !s.replacement) {
-      setKeyError('No session key available — re-run the pipeline.');
+      setKeyError('No session key available. Please re-run the pipeline.');
       return;
     }
     try {
@@ -144,7 +144,7 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
               ? 'Best for handing back to the same workflow. Formatting is approximate.'
               : s.docxFormat === 'MARKDOWN'
               ? 'Best for AI ingestion and reviewing in any text tool.'
-              : 'Styled HTML — preserves more layout than Markdown.'}
+              : 'Styled HTML. Preserves more layout than Markdown.'}
           </div>
         </div>
       ) : null}

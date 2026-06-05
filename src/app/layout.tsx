@@ -17,9 +17,9 @@ const dmMono = DM_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'PrivacyScript — by TekDruid',
+  title: 'PrivacyScript by TekDruid',
   description:
-    'De-identify health records in your browser. Nothing leaves your device. GDPR, HIPAA, EHDS, UK GDPR, NIS2.',
+    'Check compliance and de-identify health records in your browser. Nothing leaves your device. GDPR, HIPAA, EHDS, UK GDPR, NIS2.',
   robots: { index: true, follow: true },
   manifest: '/privacyscript/manifest.json',
 };

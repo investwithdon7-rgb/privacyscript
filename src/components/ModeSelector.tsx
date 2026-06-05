@@ -15,7 +15,7 @@ export function ModeSelector({ value, onChange }: ModeSelectorProps) {
         onClick={() => onChange('PSEUDONYMISE')}
         title="Pseudonymise"
         legal="GDPR Article 4(5)"
-        bullet1="Identifiers replaced with consistent tokens. Same patient → same pseudonym."
+        bullet1="Identifiers replaced with consistent tokens. The same patient always maps to the same pseudonym."
         bullet2="A re-identification key file is generated. You hold the key, not us."
         bullet3="Data remains personal data. Suitable for analytics, research cohorts, internal sharing."
       />

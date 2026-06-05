@@ -43,14 +43,14 @@ export default function LandingPage() {
       <Brand />
       <section className="mt-16">
         <h1 className="text-4xl md:text-5xl font-bold leading-tight tracking-tight">
-          De-identify health records.
+          Check compliance. De-identify safely.
           <br />
           <span style={{ color: '#4F46E5' }}>In your browser.</span> Nothing leaves your device.
         </h1>
         <p className="text-[color:var(--color-muted)] mt-6 max-w-2xl text-lg leading-relaxed">
-          Built for healthcare professionals, pharma teams, researchers and clinicians who need
-          GDPR / HIPAA / EHDS-compliant de-identification before sharing records for analytics,
-          research, or feeding to AI tools.
+          Find the personal and health information hidden in a record, and see whether it is
+          risky to share or paste into an AI tool. Then remove or mask it on your own device,
+          ready for GDPR, HIPAA, EHDS and research use.
         </p>
 
         <div className="mt-12 grid md:grid-cols-2 gap-4">
@@ -63,12 +63,13 @@ export default function LandingPage() {
             className="surface rounded-2xl p-6 text-left hover:border-[#4F46E5] transition-colors"
           >
             <div className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)]">
-              1. Check Compliance
+              Check
             </div>
             <h2 className="text-2xl font-bold mt-3">Is this safe to share or upload to AI?</h2>
             <p className="text-sm text-[color:var(--color-muted)] mt-3 leading-relaxed">
-              Scan for PII, PHI, health data and jurisdiction-specific AI upload risk before
-              distributing a document.
+              See what sensitive information is hiding in a document, from names and dates to
+              medical record numbers and health details, and whether it is risky to share or
+              paste into an AI tool.
             </p>
           </button>
 
@@ -78,20 +79,21 @@ export default function LandingPage() {
             className="surface rounded-2xl p-6 text-left hover:border-[#4F46E5] transition-colors"
           >
             <div className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)]">
-              2. De-identify
+              Clean up
             </div>
             <h2 className="text-2xl font-bold mt-3">Make the document safer.</h2>
             <p className="text-sm text-[color:var(--color-muted)] mt-3 leading-relaxed">
-              Anonymise for external sharing and AI upload, or pseudonymise for internal
-              research where you keep the re-identification key.
+              Anonymise to remove identities for good, the safer choice for AI tools and public
+              sharing. Or pseudonymise to swap them for codes you can reverse later with a key
+              that only you keep.
             </p>
           </button>
         </div>
 
         {activeJob === null ? (
           <div className="mt-8 surface rounded-xl px-5 py-4 text-sm text-[color:var(--color-muted)]">
-            Choose a main function to begin. If you are unsure whether a document is safe,
-            start with Check Compliance.
+            Choose where to begin. If you are not sure whether a document is safe to share,
+            start with Check.
           </div>
         ) : null}
 
@@ -101,7 +103,7 @@ export default function LandingPage() {
         <div className="mt-12">
           <div className="flex items-center justify-between mb-3">
             <h2 className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)]">
-              Step 1 — choose regulatory target
+              Step 1. Where will this data go?
             </h2>
             <button
               type="button"
@@ -127,7 +129,7 @@ export default function LandingPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  {/* Mode badge — shows what will be applied */}
+                  {/* Mode badge shows what will be applied */}
                   <span
                     className="mono text-xs px-2.5 py-1 rounded-full font-semibold border"
                     style={{
@@ -136,10 +138,10 @@ export default function LandingPage() {
                       borderColor: effectiveMode === 'PSEUDONYMISE' ? 'rgba(79,70,229,0.4)' : 'rgba(124,58,237,0.4)',
                     }}
                   >
-                    {effectiveMode === 'PSEUDONYMISE' ? '🔑 Pseudonymise' : '🔒 Anonymise'}
+                    {effectiveMode === 'PSEUDONYMISE' ? 'Pseudonymise' : 'Anonymise'}
                   </span>
                   <span className="mono text-xs text-[color:var(--color-muted)] group-hover:text-[#4F46E5] transition-colors">
-                    Change →
+                    Change
                   </span>
                 </div>
               </div>
@@ -149,10 +151,10 @@ export default function LandingPage() {
           )}
         </div>
 
-        {/* Step 2: Upload / paste — renumbered from Step 3 */}
+        {/* Step 2: Upload or paste the record */}
         <div className="mt-10">
           <h2 className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)]">
-            Step 2 — upload or paste a record
+            Step 2. Upload or paste a record
           </h2>
           <DropZone
             accept=".txt,.json,.hl7,.pdf,.docx,.csv,.tsv,.dcm,.dicom"
@@ -199,7 +201,7 @@ function Footer() {
         <span>PrivacyScript by TekDruid · client-side only · zero telemetry</span>
         <div className="flex gap-4">
           <a href="/privacyscript/batch/" className="hover:text-white transition-colors">
-            Batch processing →
+            Batch processing
           </a>
           <span>v0.2 · {new Date().getUTCFullYear()}</span>
         </div>

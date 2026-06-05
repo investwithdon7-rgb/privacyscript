@@ -87,7 +87,7 @@ export default function OutputPage() {
               <>
                 <p>
                   <strong className="text-white">Pseudonymise mode (GDPR Article 4(5))</strong>: data
-                  remains personal data. You hold the re-identification key — keep it under access
+                  remains personal data. You hold the re-identification key, so keep it under access
                   control. Suitable for analytics pipelines, research cohorts, and internal data
                   sharing where the data controller is the key holder.
                 </p>

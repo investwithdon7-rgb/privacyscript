@@ -55,7 +55,7 @@ export function SpanEditor({
   const [pickerPos, setPickerPos] = useState<{ x: number; y: number } | null>(null);
   const [tooltip, setTooltip] = useState<{ key: string; x: number; y: number } | null>(null);
 
-  // Build character-to-position map so we can translate DOM selection → text offsets.
+  // Build character-to-position map so we can translate DOM selection into text offsets.
   // Each text node renders a slice of the full text; we track the cumulative offset.
 
   const handleMouseUp = useCallback(() => {
@@ -148,7 +148,7 @@ export function SpanEditor({
       <mark
         key={key}
         data-span-key={key}
-        title={`${s.label} (${s.source}${s.confidence != null ? ` · ${Math.round(s.confidence * 100)}%` : ''}) — click to dismiss`}
+        title={`${s.label} (${s.source}${s.confidence != null ? ` · ${Math.round(s.confidence * 100)}%` : ''}). Click to dismiss.`}
         onClick={() => {
           if (isDismissed) {
             onRestoreSpan(key);

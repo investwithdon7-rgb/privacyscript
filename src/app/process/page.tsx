@@ -47,7 +47,7 @@ export default function ProcessPage() {
     });
   };
 
-  // When the user clicks "Done — continue" on the uncertain panel, we also
+  // When the user clicks "Done, continue" on the uncertain panel, we also
   // auto-dismiss any spans that still have no decision (treat as rejected).
   const handleUncertainConfirmAll = () => {
     const auto: Record<string, boolean> = { ...s.uncertainSpanDecisions };
@@ -94,7 +94,7 @@ export default function ProcessPage() {
       <section className="mt-10">
         <h1 className="text-3xl font-bold">Processing record</h1>
         <p className="text-[color:var(--color-muted)] mt-2 mono text-sm">
-          {s.filename ?? '—'} · {s.format ?? 'detecting…'} · {s.mode}
+          {s.filename ?? 'record'} · {s.format ?? 'detecting…'} · {s.mode}
         </p>
         <PipelineProgress stageIndex={s.stageIndex} />
 
@@ -172,7 +172,7 @@ export default function ProcessPage() {
               />
             )}
 
-            {/* Phase 1.3: Manual span editor — only show once uncertain panel is resolved */}
+            {/* Phase 1.3: Manual span editor, only shown once the uncertain panel is resolved */}
             {uncertainResolved && s.originalText && (
               <SpanEditor
                 text={s.originalText}

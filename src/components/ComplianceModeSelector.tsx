@@ -27,7 +27,7 @@ export function ComplianceModeSelector({ value, onChange }: ComplianceModeSelect
   return (
     <div className="mt-4">
       <div className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)] mb-3">
-        Regulatory target
+        Where will this data go?
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
         {COMPLIANCE_PROFILE_IDS.map((id) => {
@@ -62,10 +62,10 @@ export function ComplianceModeSelector({ value, onChange }: ComplianceModeSelect
                 </span>
                 {selected && (
                   <span
-                    className="text-xs font-bold"
+                    className="text-xs font-semibold"
                     style={{ color: colour }}
                   >
-                    ✓ Selected
+                    Selected
                   </span>
                 )}
               </div>
@@ -86,13 +86,13 @@ export function ComplianceModeSelector({ value, onChange }: ComplianceModeSelect
                 <span className="tag text-[10px]">k≥{profile.kThreshold}</span>
                 <span className="tag text-[10px]">
                   {profile.dateHandling === 'shift'
-                    ? '🗓 Shift dates'
+                    ? 'Shift dates'
                     : profile.dateHandling === 'year_only'
-                    ? '🗓 Year only'
-                    : '🗓 Suppress dates'}
+                    ? 'Year only'
+                    : 'Suppress dates'}
                 </span>
                 <span className="tag text-[10px]">
-                  {profile.suppressAllQuasi ? '🔒 Suppress quasi' : '👁 Review quasi'}
+                  {profile.suppressAllQuasi ? 'Suppress quasi-identifiers' : 'Review quasi-identifiers'}
                 </span>
                 <span
                   className="text-[10px] px-2 py-0.5 rounded-full border font-medium"

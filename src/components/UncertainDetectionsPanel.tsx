@@ -37,8 +37,8 @@ export function UncertainDetectionsPanel({
         <div>
           <h2 className="text-lg font-semibold">Uncertain detections</h2>
           <p className="text-sm text-[color:var(--color-muted)] mt-1">
-            The NER model detected these spans at moderate confidence (50–85%). Review each one
-            and confirm or dismiss.
+            These were detected with moderate confidence (50 to 85 percent). Review each one
+            and confirm or dismiss it.
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
@@ -102,7 +102,7 @@ export function UncertainDetectionsPanel({
                         : { borderColor: 'var(--color-border)', color: 'var(--color-muted)' }
                     }
                   >
-                    ✓ Confirm
+                    Confirm
                   </button>
                   <button
                     type="button"
@@ -115,7 +115,7 @@ export function UncertainDetectionsPanel({
                         : { borderColor: 'var(--color-border)', color: 'var(--color-muted)' }
                     }
                   >
-                    ✗ Dismiss
+                    Dismiss
                   </button>
                 </div>
               </div>
@@ -140,7 +140,7 @@ export function UncertainDetectionsPanel({
         >
           {undecided.length > 0
             ? `${undecided.length} decision${undecided.length === 1 ? '' : 's'} remaining`
-            : 'Done — continue'}
+            : 'Done, continue'}
         </button>
       </div>
     </div>

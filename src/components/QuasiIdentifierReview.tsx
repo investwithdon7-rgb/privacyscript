@@ -11,12 +11,12 @@ interface QuasiIdentifierReviewProps {
 
 const LABEL_DESCRIPTIONS: Record<string, string> = {
   RARE_DISEASE_ICD:
-    'Rare ICD-10 code — keeping it identifies the patient strongly. Recommended: redact.',
+    'Rare ICD-10 code. Keeping it strongly identifies the patient. We recommend redacting it.',
   INSTITUTION:
-    'Treating institution — combined with date of admission this is highly identifying.',
-  ETHNICITY: 'Ethnicity / race field — quasi-identifier under GDPR Article 9.',
+    'Treating institution. Combined with the date of admission, this is highly identifying.',
+  ETHNICITY: 'Ethnicity or race field. A quasi-identifier under GDPR Article 9.',
   OCCUPATION:
-    'Occupation — quasi-identifier; unique combinations can identify a person.',
+    'Occupation. A quasi-identifier; unique combinations can identify a person.',
 };
 
 export function QuasiIdentifierReview({
@@ -45,7 +45,7 @@ export function QuasiIdentifierReview({
 
       {labels.length === 0 ? (
         <div className="text-sm text-[color:var(--color-muted)] mono">
-          None found — proceed.
+          None found. You can proceed.
         </div>
       ) : (
         <ul className="divide-y divide-[color:var(--color-border)]">
@@ -57,7 +57,7 @@ export function QuasiIdentifierReview({
                 <div className="flex-1">
                   <div className="mono text-sm font-semibold">{label}</div>
                   <div className="text-xs text-[color:var(--color-muted)] mt-1">
-                    {LABEL_DESCRIPTIONS[label] ?? 'Quasi-identifier — review for risk.'}
+                    {LABEL_DESCRIPTIONS[label] ?? 'Quasi-identifier. Review for risk.'}
                   </div>
                   <div className="text-xs text-[color:var(--color-muted)] mt-1 mono">
                     {spans.length} match{spans.length === 1 ? '' : 'es'}: {spans.slice(0, 3).map((s) => `"${s.text}"`).join(', ')}

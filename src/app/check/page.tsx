@@ -76,7 +76,7 @@ export default function ComplianceCheckPage() {
 
         <div className="mt-10">
           <h2 className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)] mb-3">
-            Step 1 — choose jurisdiction
+            Step 1. Which rules apply to you?
           </h2>
           <div className="grid md:grid-cols-2 gap-3">
             {JURISDICTIONS.map((item) => {
@@ -116,7 +116,7 @@ export default function ComplianceCheckPage() {
 
         <div className="mt-10">
           <h2 className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)]">
-            Step 2 — upload or paste a document
+            Step 2. Upload or paste a document
           </h2>
           <DropZone
             accept=".txt,.json,.hl7,.pdf,.docx,.csv,.tsv,.dcm,.dicom"

@@ -23,10 +23,21 @@ function RiskPill({ level }: { level?: string }) {
 }
 
 function StatusIcon({ status }: { status: BatchItem['status'] }) {
-  if (status === 'pending') return <span className="text-[color:var(--color-muted)]">—</span>;
-  if (status === 'processing') return <span className="animate-spin inline-block">⚙</span>;
-  if (status === 'done') return <span style={{ color: '#10B981' }}>✓</span>;
-  return <span style={{ color: '#EF4444' }}>✗</span>;
+  if (status === 'pending') {
+    return <span className="mono text-xs text-[color:var(--color-muted)]">Queued</span>;
+  }
+  if (status === 'processing') {
+    return (
+      <span className="inline-flex items-center gap-2 mono text-xs text-[color:var(--color-muted)]">
+        <span className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+        Working
+      </span>
+    );
+  }
+  if (status === 'done') {
+    return <span className="mono text-xs font-semibold" style={{ color: '#10B981' }}>Done</span>;
+  }
+  return <span className="mono text-xs font-semibold" style={{ color: '#EF4444' }}>Failed</span>;
 }
 
 export default function BatchPage() {
@@ -70,7 +81,7 @@ export default function BatchPage() {
             onClick={() => router.push('/')}
             className="btn-secondary text-sm"
           >
-            ← Single record
+            Back to single record
           </button>
         </div>
 
@@ -80,13 +91,13 @@ export default function BatchPage() {
             <div className="mb-8">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)]">
-                  Step 1 — regulatory target
+                  Step 1. Where will this data go?
                 </h2>
                 <button
                   onClick={() => setShowProfiles((p) => !p)}
                   className="mono text-xs text-[color:var(--color-muted)] hover:text-white"
                 >
-                  {showProfiles ? '▲ hide' : '▼ change'}
+                  {showProfiles ? 'Hide' : 'Change'}
                 </button>
               </div>
               {showProfiles ? (
@@ -102,7 +113,7 @@ export default function BatchPage() {
             {/* Step 2: Files */}
             <div className="mb-8">
               <h2 className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)] mb-3">
-                Step 2 — add files
+                Step 2. Add files
               </h2>
 
               {/* Drop zone */}
@@ -164,7 +175,7 @@ export default function BatchPage() {
                 className="btn-primary"
                 disabled={files.length === 0}
               >
-                Start batch de-identification →
+                Start batch de-identification
               </button>
             </div>
           </>
@@ -191,7 +202,7 @@ export default function BatchPage() {
                   </div>
                 )}
                 {result.isFinished && !result.isRunning && (
-                  <span style={{ color: '#10B981' }} className="font-semibold">✓ Complete</span>
+                  <span style={{ color: '#10B981' }} className="font-semibold">Complete</span>
                 )}
               </div>
 
@@ -224,14 +235,14 @@ export default function BatchPage() {
                         )}
                       </td>
                       <td className="px-3 py-3"><StatusIcon status={item.status} /></td>
-                      <td className="px-3 py-3 mono">{item.spansFound ?? '—'}</td>
+                      <td className="px-3 py-3 mono">{item.spansFound ?? '·'}</td>
                       <td className="px-3 py-3"><RiskPill level={item.riskLevel} /></td>
                       <td className="px-3 py-3 mono">
                         {item.validationPassed === undefined
-                          ? '—'
+                          ? <span className="text-[color:var(--color-muted)]">&middot;</span>
                           : item.validationPassed
-                          ? <span style={{ color: '#10B981' }}>✓</span>
-                          : <span style={{ color: '#EF4444' }}>✗</span>}
+                          ? <span className="text-xs font-semibold" style={{ color: '#10B981' }}>Pass</span>
+                          : <span className="text-xs font-semibold" style={{ color: '#EF4444' }}>Fail</span>}
                       </td>
                     </tr>
                   ))}
@@ -249,7 +260,7 @@ export default function BatchPage() {
                   onClick={() => void result.downloadZip?.()}
                   className="btn-primary"
                 >
-                  Download all as ZIP →
+                  Download all as ZIP
                 </button>
               </div>
             )}

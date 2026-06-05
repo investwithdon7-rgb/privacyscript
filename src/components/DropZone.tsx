@@ -67,7 +67,7 @@ export function DropZone({ accept, disabled, onFile }: DropZoneProps) {
             }}
             disabled={!!disabled}
           >
-            {t === 'file' ? '📁 Upload file' : '📋 Paste text'}
+            {t === 'file' ? 'Upload file' : 'Paste text'}
           </button>
         ))}
       </div>

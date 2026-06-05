@@ -88,7 +88,7 @@ export default function ReviewPage() {
                 s.risk.lDiversity >= 99
                   ? 'No sensitive attrs retained'
                   : s.risk.lDiversity < 2
-                  ? 'Low — sensitive attr exposed'
+                  ? 'Low, sensitive attribute exposed'
                   : 'Adequate'
               }
               tone={s.risk.lDiversity < 2 && s.risk.lDiversity < 99 ? 'bad' : 'good'}
@@ -210,7 +210,7 @@ export default function ReviewPage() {
             style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid var(--color-danger)' }}
           >
             <div className="font-semibold" style={{ color: 'var(--color-danger)' }}>
-              Validation failed — identifier leaked verbatim
+              Validation failed. An identifier leaked verbatim.
             </div>
             <p className="text-sm mt-1 text-[color:var(--color-muted)]">
               {s.validation.originalsLeaked.length} original identifier value(s) were found

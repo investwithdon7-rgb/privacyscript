@@ -37,7 +37,7 @@ export function NerBanner() {
         <div className="text-sm font-semibold">Free-text name detection (optional)</div>
         <div className="text-xs text-[color:var(--color-muted)] mt-1 mono">
           {status.error
-            ? `Could not load NER model — regex engine running standalone. (${status.error})`
+            ? `Could not load the name-detection model. The rule engine is running on its own. (${status.error})`
             : status.loadProgress > 0
             ? `Loading model… ${status.loadProgress}%`
             : 'Loads a ~50MB clinical NER model in your browser. First load is slow; subsequent sessions are instant.'}
