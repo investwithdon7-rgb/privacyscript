@@ -11,7 +11,11 @@
 //   deploy: npx wrangler deploy
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "privacyscript",
+  // Name must match the Worker connected to this repo in Workers Builds —
+  // it is the (formerly proxy-only) worker that owns the
+  // tekdruid.com/privacyscript* route; this config replaces it in place
+  // with the static-asset-serving worker.
+  "name": "tekdruid-privacyscript-router",
   "main": "cloudflare/worker.js",
   "compatibility_date": "2026-07-01",
   "assets": {
