@@ -1,3 +1,0 @@
-# Cloudflare Pages catch-all 404 — fall back to the Next.js 404 page.
-# Pages auto-serves 404.html for unknown routes, this is a belt-and-braces.
-/*   /404.html   404

@@ -20,7 +20,11 @@
   "compatibility_date": "2026-07-01",
   "assets": {
     "directory": "./out",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
+    // Serve out/404.html for unknown paths. (Replaces the Pages-era
+    // public/_redirects rule — Workers Static Assets rejects 404-status
+    // redirect rules.)
+    "not_found_handling": "404-page"
   },
   "routes": [
     { "pattern": "tekdruid.com/privacyscript*", "zone_name": "tekdruid.com" }
