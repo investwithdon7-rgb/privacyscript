@@ -1,0 +1,24 @@
+// Cloudflare Worker configuration.
+//
+// The Worker serves the static Next.js export (out/) directly via Workers
+// Static Assets and is routed at tekdruid.com/privacyscript*. The small
+// script in cloudflare/worker.js strips the /privacyscript prefix before
+// asset lookup (the export's files live unprefixed in out/, while every URL
+// the app emits carries the basePath).
+//
+// Deployed automatically by Workers Builds on push to main:
+//   build:  npm run build          (produces out/ with basePath /privacyscript)
+//   deploy: npx wrangler deploy
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "privacyscript",
+  "main": "cloudflare/worker.js",
+  "compatibility_date": "2026-07-01",
+  "assets": {
+    "directory": "./out",
+    "binding": "ASSETS"
+  },
+  "routes": [
+    { "pattern": "tekdruid.com/privacyscript*", "zone_name": "tekdruid.com" }
+  ]
+}

@@ -122,48 +122,46 @@ NEXT_PUBLIC_BASE_PATH= npm run dev
 
 ## Deployment
 
-PrivacyScript ships to **Cloudflare Pages** and is exposed via a Cloudflare Worker
-at `tekdruid.com/privacyscript` — single origin with the rest of TekDruid, so SEO
-and analytics-free hosting work in one place.
+PrivacyScript ships as a single **Cloudflare Worker with Static Assets**,
+routed at `tekdruid.com/privacyscript` — single origin with the rest of
+TekDruid, no separate Pages project.
 
 ### Topology
 
 ```
 tekdruid.com/*               → Bluehost (existing marketing site)
-tekdruid.com/privacyscript*  → Cloudflare Worker → privacyscript.pages.dev
+tekdruid.com/privacyscript*  → Cloudflare Worker "privacyscript" (serves out/ as static assets)
 ```
 
-The Worker strips the `/privacyscript` prefix and forwards to Pages. Pages serves
-the static `out/` directory built with `basePath=/privacyscript`, so every asset
-reference points back through the Worker.
+The static export is built with `basePath=/privacyscript`, so every URL the
+app emits carries the prefix, while the files live unprefixed in the asset
+store. The tiny script in `cloudflare/worker.js` strips the prefix before
+asset lookup. Configuration lives in `wrangler.jsonc` (worker name, assets
+directory, route).
 
-### Pages deploy
+### Automatic deploys (Workers Builds)
 
-```bash
-npm run build
-npx wrangler pages deploy out --project-name=privacyscript
-```
-
-`CLOUDFLARE_API_TOKEN` must be set. The build command + output directory match
-the Pages dashboard:
+The Worker is connected to this GitHub repository. Every push to `main`
+builds and deploys production; non-production branches get preview versions.
 
 | Field | Value |
 |---|---|
-| Project name | `privacyscript` |
 | Build command | `npm run build` |
-| Build output | `out` |
+| Deploy command | `npx wrangler deploy` |
 | Production branch | `main` |
-| Env var | `NEXT_PUBLIC_BASE_PATH=/privacyscript` |
 
-### Worker deploy
+`NEXT_PUBLIC_BASE_PATH` defaults to `/privacyscript` via `.env.production` —
+no dashboard variables required.
+
+### Manual deploy
 
 ```bash
-cd cloudflare/worker
+npm run build
 npx wrangler deploy
 ```
 
-The route binding in `wrangler.toml` activates the worker for
-`tekdruid.com/privacyscript*` on the `tekdruid.com` zone.
+Requires `wrangler login` or `CLOUDFLARE_API_TOKEN`. Validate config changes
+without deploying: `npx wrangler deploy --dry-run`.
 
 ## Non-negotiables
 
