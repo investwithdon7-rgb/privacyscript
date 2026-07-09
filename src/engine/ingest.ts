@@ -24,14 +24,6 @@ export interface IngestResult {
 }
 
 const HL7_SEGMENT_RE = /^MSH\|/;
-const FHIR_RESOURCE_KEYS = new Set([
-  'resourceType',
-  'Patient',
-  'Bundle',
-  'Observation',
-  'Encounter',
-  'Condition',
-]);
 
 /**
  * Decide which format an uploaded file is. Uses extension first, then a
@@ -59,17 +51,14 @@ export function detectFormat(filename: string, content: string): RecordFormat {
 
 function looksLikeFhir(content: string): boolean {
   const trimmed = content.trim();
-  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return false;
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (Array.isArray(parsed)) return false;
-    const keys = new Set(Object.keys(parsed));
-    if (FHIR_RESOURCE_KEYS.has(parsed.resourceType)) return true;
-    for (const k of keys) if (FHIR_RESOURCE_KEYS.has(k)) return true;
-  } catch {
-    return false;
-  }
-  return false;
+  if (!trimmed.startsWith('{')) return false;
+  // The caller sniffs only the first few KB of the file, so the preview is
+  // usually TRUNCATED JSON — a full JSON.parse throws on any bundle larger
+  // than the preview window and silently downgraded real FHIR files to plain
+  // text (losing structural name forcing and FHIR reconstruction). Look for
+  // the FHIR-specific resourceType key instead; the FHIR parser itself does
+  // the strict full-document parse later and surfaces real syntax errors.
+  return /"resourceType"\s*:\s*"[A-Za-z]+"/.test(trimmed);
 }
 
 /** 50 MB hard cap for text formats. Larger files would OOM the tab. */

@@ -1,17 +1,18 @@
 'use client';
 
-import { detect } from '@/engine/detect';
+import { detect, type Span } from '@/engine/detect';
 import { runClinicalNER } from '@/engine/ner';
 import { replaceSpans, type ReplacementResult } from '@/engine/replace';
 import { assessRisk } from '@/engine/risk';
 import { validate } from '@/engine/validate';
 import { buildAuditLog } from '@/engine/output';
 import { detectFormat, readFileAsText, type RecordFormat } from '@/engine/ingest';
-import { parseFhir, reconstructFhir } from '@/formats/fhir';
-import { parseHL7, reconstructHL7, type HL7Leaf } from '@/formats/hl7';
+import { parseFhir, reconstructFhir, forcedLabelForFhirPath } from '@/formats/fhir';
+import { parseHL7, reconstructHL7, forcedLabelForHl7Leaf, type HL7Leaf } from '@/formats/hl7';
 import type { DocxIngestResult } from '@/formats/docx';
 import type { PdfIngest, PdfRedaction } from '@/formats/pdf-typed';
 import type { CsvIngest, CsvLeaf } from '@/formats/csv';
+import type { IdentifierLabel } from '@/lib/identifiers';
 import type { ScannedPdfIngest, ScannedRedaction, ScanProgress } from '@/formats/pdf-scanned';
 import { generateSessionSecret } from '@/engine/crypto';
 import {
@@ -35,6 +36,37 @@ import { getSession, updateSession } from '@/state/session';
 const LEAF_DELIM = '\u001F';
 
 /**
+ * Build forced detection spans from structural knowledge of the source format.
+ * Structured formats tell us outright which leaves are names/addresses (FHIR
+ * paths, HL7 field positions, CSV headers) — those leaves are redacted even
+ * when regex and NER produce no evidence. Offsets are computed against the
+ * LEAF_DELIM-joined text the detect stage runs on.
+ */
+function buildForcedSpans(
+  values: string[],
+  labelForIndex: (i: number) => IdentifierLabel | null
+): Span[] {
+  const spans: Span[] = [];
+  let offset = 0;
+  values.forEach((v, i) => {
+    const label = labelForIndex(i);
+    if (label && v.trim().length > 0) {
+      spans.push({
+        start: offset,
+        end: offset + v.length,
+        text: v,
+        label,
+        category: 'HIPAA',
+        source: 'rule',
+        confidence: 1,
+      });
+    }
+    offset += v.length + LEAF_DELIM.length;
+  });
+  return spans;
+}
+
+/**
  * Run the ingest + detect stages for a staged file. Pipeline is split here so
  * the user can review quasi-identifiers on Screen 2 before stages 3-6 run.
  */
@@ -53,6 +85,11 @@ export async function ingestAndDetect(file: File): Promise<void> {
     let text: string;
     let parsedOriginal: unknown = null;
     let sourceBytes: ArrayBuffer | null = null;
+    let forcedSpans: Span[] = [];
+    // The typed-PDF case can re-route to the scanned pipeline; the format the
+    // rest of the pipeline sees (output reconstruction switches on it!) must
+    // reflect that, not the pre-ingest guess.
+    let effectiveFormat: RecordFormat = confirmedFormat;
 
     switch (confirmedFormat) {
       case 'FHIR_R4': {
@@ -60,6 +97,10 @@ export async function ingestAndDetect(file: File): Promise<void> {
         const { resource, leaves } = parseFhir(raw);
         parsedOriginal = { resource, leaves };
         text = leaves.map((l) => l.value).join(LEAF_DELIM);
+        forcedSpans = buildForcedSpans(
+          leaves.map((l) => l.value),
+          (i) => forcedLabelForFhirPath(leaves[i].path)
+        );
         break;
       }
       case 'HL7_V2': {
@@ -67,6 +108,10 @@ export async function ingestAndDetect(file: File): Promise<void> {
         const { doc, leaves } = parseHL7(raw);
         parsedOriginal = { doc, leaves };
         text = leaves.map((l) => l.value).join(LEAF_DELIM);
+        forcedSpans = buildForcedSpans(
+          leaves.map((l) => l.value),
+          (i) => forcedLabelForHl7Leaf(doc, leaves[i])
+        );
         break;
       }
       case 'TEXT': {
@@ -87,21 +132,22 @@ export async function ingestAndDetect(file: File): Promise<void> {
         const typedResult = await ingestPdf(sourceBytes);
 
         // Heuristic: scanned PDFs return very little text per page.
-        // A document is treated as scanned only when ALL of:
-        //   - at least one page has some content to compare
-        //   - average chars/page < 60  (almost no text layer on average)
+        // A document is treated as scanned when:
+        //   - it has pages, AND
+        //   - average chars/page < 60  (almost no text layer on average), AND
         //   - max chars on any single page < 120 (no page has meaningful text)
-        // Without the maxPerPage guard a mixed document (cover page with a title
-        // + pure-scan pages) would incorrectly fall through to OCR.
+        // A pure image scan extracts ZERO text — that is the strongest scan
+        // signal of all, so no minimum-content guard: requiring some text
+        // used to route all-image PDFs down the typed path, producing an
+        // empty document with 0 identifiers detected.
         const textLengths = typedResult.pages.map((p) => p.text.trim().length);
         const avgPerPage =
           typedResult.pages.length === 0
             ? 0
             : textLengths.reduce((s, l) => s + l, 0) / typedResult.pages.length;
         const maxPerPage = textLengths.reduce((m, l) => Math.max(m, l), 0);
-        const hasAnyContent = textLengths.some((l) => l > 0);
 
-        if (hasAnyContent && avgPerPage < 60 && maxPerPage < 120) {
+        if (typedResult.pages.length > 0 && avgPerPage < 60 && maxPerPage < 120) {
           // Treat as scanned.
           const { ingestScannedPdf } = await import('@/formats/pdf-scanned');
           const onProg = (p: ScanProgress) => {
@@ -115,7 +161,7 @@ export async function ingestAndDetect(file: File): Promise<void> {
           );
           parsedOriginal = scanned;
           text = scanned.fullText;
-          updateSession({ format: 'PDF_SCANNED' });
+          effectiveFormat = 'PDF_SCANNED';
         } else {
           parsedOriginal = typedResult;
           text = typedResult.fullText;
@@ -124,10 +170,14 @@ export async function ingestAndDetect(file: File): Promise<void> {
       }
       case 'CSV': {
         const raw = await readFileAsText(file);
-        const { parseCsv } = await import('@/formats/csv');
+        const { parseCsv, forcedLabelForCsvColumn } = await import('@/formats/csv');
         const csv = parseCsv(raw);
         parsedOriginal = csv;
         text = csv.leaves.map((l) => l.value).join(LEAF_DELIM);
+        forcedSpans = buildForcedSpans(
+          csv.leaves.map((l) => l.value),
+          (i) => forcedLabelForCsvColumn(csv.leaves[i].column)
+        );
         break;
       }
       case 'PDF_SCANNED': {
@@ -185,7 +235,7 @@ export async function ingestAndDetect(file: File): Promise<void> {
 
     updateSession({
       filename: file.name,
-      format: confirmedFormat,
+      format: effectiveFormat,
       originalText: text,
       originalSize: file.size,
       parsedOriginal,
@@ -194,8 +244,10 @@ export async function ingestAndDetect(file: File): Promise<void> {
     });
 
     // Stage 2: DETECT
+    // Forced spans (structural PII from FHIR paths / HL7 fields / CSV headers)
+    // carry confidence 1, so they always land in the auto-accepted bucket.
     const nerSpans = await runClinicalNER(text);
-    const detection = detect(text, nerSpans);
+    const detection = detect(text, [...nerSpans, ...forcedSpans]);
 
     // Default-on suppression for quasi-identifiers.
     const autoRedact = new Set<string>();

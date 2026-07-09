@@ -8,7 +8,7 @@ import { QuasiIdentifierReview } from '@/components/QuasiIdentifierReview';
 import { UncertainDetectionsPanel } from '@/components/UncertainDetectionsPanel';
 import { SpanEditor } from '@/components/SpanEditor';
 import { useSession } from '@/hooks/useSession';
-import { updateSession } from '@/state/session';
+import { getSession, updateSession } from '@/state/session';
 import { finalise } from '@/hooks/useDeidentification';
 import type { Span } from '@/engine/detect';
 
@@ -28,8 +28,14 @@ export default function ProcessPage() {
     }
   }, [s.quasiConfirmed, s.stageIndex, router]);
 
+  // NOTE: every handler below reads the CURRENT session via getSession()
+  // rather than the render-time snapshot `s`. Handlers that fire in rapid
+  // succession (e.g. the "Redact all of these" loop calls onDecide once per
+  // span, synchronously) would otherwise each spread the same stale copy and
+  // overwrite one another — only the last decision survived.
+
   const toggleQuasi = (label: string) => {
-    const next = new Set(s.quasiToRedact);
+    const next = new Set(getSession().quasiToRedact);
     if (next.has(label)) next.delete(label);
     else next.add(label);
     updateSession({ quasiToRedact: next });
@@ -41,7 +47,7 @@ export default function ProcessPage() {
   const handleUncertainDecide = (key: string, confirmed: boolean) => {
     updateSession({
       uncertainSpanDecisions: {
-        ...s.uncertainSpanDecisions,
+        ...getSession().uncertainSpanDecisions,
         [key]: confirmed,
       },
     });
@@ -50,8 +56,9 @@ export default function ProcessPage() {
   // When the user clicks "Done, continue" on the uncertain panel, we also
   // auto-dismiss any spans that still have no decision (treat as rejected).
   const handleUncertainConfirmAll = () => {
-    const auto: Record<string, boolean> = { ...s.uncertainSpanDecisions };
-    for (const sp of s.detection?.uncertainSpans ?? []) {
+    const cur = getSession();
+    const auto: Record<string, boolean> = { ...cur.uncertainSpanDecisions };
+    for (const sp of cur.detection?.uncertainSpans ?? []) {
       const key = `${sp.start}:${sp.end}:${sp.label}`;
       if (auto[key] === undefined) auto[key] = false;
     }
@@ -60,17 +67,17 @@ export default function ProcessPage() {
 
   // ── Manual span editor ────────────────────────────────────────────────
   const handleAddSpan = (span: Span) => {
-    updateSession({ userAddedSpans: [...s.userAddedSpans, span] });
+    updateSession({ userAddedSpans: [...getSession().userAddedSpans, span] });
   };
 
   const handleDismissSpan = (key: string) => {
-    const next = new Set(s.userDismissedSpanKeys);
+    const next = new Set(getSession().userDismissedSpanKeys);
     next.add(key);
     updateSession({ userDismissedSpanKeys: next });
   };
 
   const handleRestoreSpan = (key: string) => {
-    const next = new Set(s.userDismissedSpanKeys);
+    const next = new Set(getSession().userDismissedSpanKeys);
     next.delete(key);
     updateSession({ userDismissedSpanKeys: next });
   };

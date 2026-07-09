@@ -1,4 +1,5 @@
 import { runRules, type Span } from '@/engine/detect';
+import { flexibleWhitespacePattern } from '@/engine/replace';
 import type { Mode } from '@/lib/constants';
 
 export interface ValidationResult {
@@ -59,8 +60,11 @@ export async function validate(
     // not as a substring of a longer word/phrase. "University Hospital" inside
     // "University Hospitals of Leicester" is not a leak — the institution name
     // family is the same, but no identifier survived the redaction.
-    const escaped = original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    if (new RegExp(`(?:^|\\b|\\s)${escaped}(?:$|\\b|\\s)`).test(deidentifiedText)) {
+    // Internal whitespace matches flexibly (\s+) so extraction-spacing
+    // variants ("Karoline  Stenberg") are caught too — mirrors the residual
+    // sweep in replace.ts, which removes exactly this set.
+    const pattern = flexibleWhitespacePattern(original);
+    if (new RegExp(`(?:^|\\b|\\s)${pattern}(?:$|\\b|\\s)`).test(deidentifiedText)) {
       originalsLeaked.push(original);
     }
   }
@@ -77,11 +81,25 @@ export async function validate(
   let nerLeaks: Span[] = [];
   if (options.nerRunner) {
     try {
+      // Ranges of our own replacement tokens in the output. The NER model
+      // tokenises "[ADDRESS_LINE-FAC59712]" into fragments ("[ADDRESS") that
+      // dodge the exact-match isOwnToken check, so any span overlapping a
+      // token range positionally is discarded — it can only be the token.
+      const tokenRanges: Array<[number, number]> = [];
+      const tokenRe = /\[[A-Z_]+(?:-[A-F0-9]{6,16})?\]/g;
+      let tm: RegExpExecArray | null;
+      while ((tm = tokenRe.exec(deidentifiedText))) {
+        tokenRanges.push([tm.index, tm.index + tm[0].length]);
+      }
+      const overlapsToken = (s: Span) =>
+        tokenRanges.some(([a, b]) => s.start < b && s.end > a);
+
       const nerSpans = await options.nerRunner(deidentifiedText);
       nerLeaks = nerSpans.filter(
         (s) =>
           (s.label === 'NAME' || s.label === 'ADDRESS_LINE') &&
           !isOwnToken(s.text) &&
+          !overlapsToken(s) &&
           s.text.trim().length >= 3
       );
     } catch {

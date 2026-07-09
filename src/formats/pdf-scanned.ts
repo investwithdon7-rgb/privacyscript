@@ -107,7 +107,8 @@ async function acquirePool(
   languages: string,
   concurrency: number,
   workerPath: string,
-  corePath: string
+  corePath: string,
+  langPath: string
 ): Promise<PoolEntry> {
   const key = `${languages}:${concurrency}`;
   let p = poolPromises.get(key);
@@ -119,8 +120,27 @@ async function acquirePool(
           Tesseract.createWorker(languages, undefined, {
             workerPath,
             corePath,
-            logger: () => {
-              // No logger — we drive progress per-page instead.
+            // Self-hosted language data (public/tesseract/lang/). Without
+            // this, tesseract.js silently fetches eng.traineddata from a
+            // third-party CDN — blocked by the production CSP (OCR then
+            // hangs forever with no error) and a violation of the
+            // zero-external-calls guarantee.
+            langPath,
+            gzip: true,
+            logger: (m: unknown) => {
+              // Progress is driven per-page, not from tesseract's logger.
+              // In dev, keep a ring buffer so a stalled engine init can be
+              // diagnosed from the console (window.__tessLog).
+              if (process.env.NODE_ENV !== 'production') {
+                const g = globalThis as unknown as { __tessLog?: unknown[] };
+                g.__tessLog = [...(g.__tessLog ?? []).slice(-49), m];
+              }
+            },
+            errorHandler: (err: unknown) => {
+              if (process.env.NODE_ENV !== 'production') {
+                const g = globalThis as unknown as { __tessLog?: unknown[] };
+                g.__tessLog = [...(g.__tessLog ?? []).slice(-49), { error: String(err) }];
+              }
             },
           })
         )
@@ -153,10 +173,15 @@ export async function ingestScannedPdf(
   }
 
   // See scripts/copy-tesseract-assets.js — these are self-hosted to satisfy
-  // the strict CSP. Both paths are root-relative; in a blob Worker that
-  // resolves to the page origin.
-  const tesseractWorkerPath = asset('/tesseract/worker.min.js');
-  const tesseractCorePath = asset('/tesseract/');
+  // the strict CSP. The paths MUST be absolute: tesseract.js loads its worker
+  // via importScripts inside a blob-URL Worker, and relative URLs cannot
+  // resolve against a blob: base — the worker dies during evaluation and
+  // createWorker hangs forever with no error surfaced. corePath and langPath
+  // are fetched from inside that same blob worker, so they need the origin too.
+  const abs = (p: string) => new URL(asset(p), window.location.origin).href;
+  const tesseractWorkerPath = abs('/tesseract/worker.min.js');
+  const tesseractCorePath = abs('/tesseract/');
+  const tesseractLangPath = abs('/tesseract/lang');
 
   // pdfjs-dist transfers the typed-array's buffer to its worker via postMessage,
   // detaching the original. Slice a copy so pdfjs transfers the clone while
@@ -184,7 +209,19 @@ export async function ingestScannedPdf(
     },
   };
 
-  pool = await acquirePool(languages, concurrency, tesseractWorkerPath, tesseractCorePath);
+  onProgress({
+    pagesDone: 0,
+    pagesTotal: pdf.numPages,
+    message: 'Preparing the OCR engine (first run loads language data)…',
+  });
+
+  pool = await acquirePool(
+    languages,
+    concurrency,
+    tesseractWorkerPath,
+    tesseractCorePath,
+    tesseractLangPath
+  );
 
   onProgress({
     pagesDone: 0,
@@ -262,7 +299,11 @@ export async function ingestScannedPdf(
 // work without pulling the whole types package into our public API.
 type PdfPageLike = {
   getViewport: (opts: { scale: number }) => { width: number; height: number };
-  render: (opts: { canvasContext: CanvasRenderingContext2D; viewport: unknown }) => { promise: Promise<void> };
+  render: (opts: {
+    canvasContext: CanvasRenderingContext2D;
+    viewport: unknown;
+    intent?: string;
+  }) => { promise: Promise<void> };
 };
 
 async function ocrPage(
@@ -302,7 +343,11 @@ async function renderAndRecognise(
   canvas.height = viewport.height;
   const ctx = canvas.getContext('2d')!;
 
-  await page.render({ canvasContext: ctx, viewport }).promise;
+  // intent 'print': pdf.js schedules 'display' rendering via
+  // requestAnimationFrame, which never fires in a hidden tab — OCR would hang
+  // forever the moment the user switches tabs while waiting. Print intent
+  // uses timer-based scheduling and renders identically for OCR purposes.
+  await page.render({ canvasContext: ctx, viewport, intent: 'print' }).promise;
 
   // Pre-process: greyscale + binarise.
   const img = ctx.getImageData(0, 0, canvas.width, canvas.height);

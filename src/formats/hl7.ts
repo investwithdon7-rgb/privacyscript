@@ -11,6 +11,8 @@
  * known to carry identifiers (e.g. MSH-3 sending app/facility names).
  */
 
+import type { IdentifierLabel } from '@/lib/identifiers';
+
 export interface HL7Document {
   segments: HL7Segment[];
   fieldSep: string;
@@ -108,6 +110,39 @@ export function parseHL7(raw: string): { doc: HL7Document; leaves: HL7Leaf[] } {
     doc: { segments, fieldSep, compSep, repSep, escapeChar, subSep },
     leaves,
   };
+}
+
+/**
+ * Structural PII forcing for HL7 v2.
+ *
+ * HL7 field positions are ground truth — PID-5 IS the patient name whatever
+ * its content looks like. Name fields (XPN) and address fields (XAD) are
+ * forced to detection spans by the ingest stage so they are redacted even
+ * when regex/NER produce no evidence.
+ *
+ * fields[] is 0-indexed after the segment name, so HL7 field N = index N-1.
+ * Components beyond index 4 are codes (name-type, address-type) — skipped.
+ */
+const HL7_NAME_FIELDS: Record<string, number[]> = {
+  PID: [4, 8], // PID-5 patient name, PID-9 alias
+  NK1: [1], // NK1-2 next-of-kin name
+  GT1: [2], // GT1-3 guarantor name
+  IN1: [15], // IN1-16 name of insured
+  PV1: [6, 7, 8], // PV1-7/8/9 attending / referring / consulting doctor (XCN)
+};
+const HL7_ADDRESS_FIELDS: Record<string, number[]> = {
+  PID: [10], // PID-11 patient address
+  NK1: [3], // NK1-4 address
+  GT1: [4], // GT1-5 address
+  IN1: [18], // IN1-19 insured address
+};
+
+export function forcedLabelForHl7Leaf(doc: HL7Document, leaf: HL7Leaf): IdentifierLabel | null {
+  const seg = doc.segments[leaf.segmentIdx];
+  if (!seg || leaf.compIdx > 4) return null;
+  if (HL7_NAME_FIELDS[seg.name]?.includes(leaf.fieldIdx)) return 'NAME';
+  if (HL7_ADDRESS_FIELDS[seg.name]?.includes(leaf.fieldIdx)) return 'ADDRESS_LINE';
+  return null;
 }
 
 export function reconstructHL7(

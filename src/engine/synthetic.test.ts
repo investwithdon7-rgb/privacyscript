@@ -47,9 +47,14 @@ describe('synthetic FHIR bundle', () => {
 
     // Floors — the bundle has 5 patients with 4 emails, 4 NHS numbers,
     // 5 birthDates, 4 phones. Total direct identifiers should clear ~25.
+    // Only one of the fabricated NHS numbers passes the real mod-11 checksum;
+    // the others are downgraded to REFERENCE_ID but must still be detected.
     expect(counts['EMAIL'] ?? 0).toBeGreaterThanOrEqual(3);
     expect(counts['DATE'] ?? 0).toBeGreaterThanOrEqual(4);
-    expect((counts['NHS_NUMBER'] ?? 0) + (counts['PHONE'] ?? 0)).toBeGreaterThanOrEqual(6);
+    expect(counts['NHS_NUMBER'] ?? 0).toBeGreaterThanOrEqual(1);
+    expect(
+      (counts['NHS_NUMBER'] ?? 0) + (counts['PHONE'] ?? 0) + (counts['REFERENCE_ID'] ?? 0)
+    ).toBeGreaterThanOrEqual(7);
     expect(spans.length).toBeGreaterThan(20);
   });
 

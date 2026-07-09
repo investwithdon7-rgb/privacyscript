@@ -10,6 +10,8 @@
  * for the in/out we need (parse + reconstruct).
  */
 
+import type { IdentifierLabel } from '@/lib/identifiers';
+
 export interface FhirLeaf {
   path: string;
   value: string;
@@ -123,6 +125,27 @@ function shouldProcessField(path: string): boolean {
     if (path.includes(seg)) return false;
   }
   return true;
+}
+
+/**
+ * Structural PII forcing.
+ *
+ * FHIR paths are ground truth: Patient.name.family IS a name — it needs no
+ * regex or NER evidence. Names are otherwise NER-only, and the NER model
+ * regularly misses isolated leaf values ("Achterberg" with no sentence
+ * context), which let Patient.name survive de-identification verbatim.
+ * The ingest stage turns every leaf whose path matches here into a forced
+ * detection span, redacted regardless of what the engines find.
+ */
+const NAME_PATH_RE =
+  /(?:^|\.)name(?:\[\d+\])?\.(?:family|text|given\[\d+\]|prefix\[\d+\]|suffix\[\d+\])$/;
+const MAIDEN_NAME_RE = /maidenName$/;
+const ADDRESS_PATH_RE = /(?:^|\.)address\[\d+\]\.(?:line\[\d+\]|city|district)$/;
+
+export function forcedLabelForFhirPath(path: string): IdentifierLabel | null {
+  if (NAME_PATH_RE.test(path) || MAIDEN_NAME_RE.test(path)) return 'NAME';
+  if (ADDRESS_PATH_RE.test(path)) return 'ADDRESS_LINE';
+  return null;
 }
 
 /**

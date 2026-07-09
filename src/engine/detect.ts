@@ -4,6 +4,7 @@ import {
   type IdentifierCategory,
   rareIcdTier,
   type RareIcdTier,
+  isValidNhsNumber,
 } from '@/lib/identifiers';
 
 export interface Span {
@@ -19,6 +20,12 @@ export interface Span {
   captureEnd?: number;
   /** Set on RARE_DISEASE_ICD spans to carry the Orphanet prevalence tier. */
   rareTier?: RareIcdTier;
+  /**
+   * Overrides the label-derived priority in overlap resolution. Used for
+   * downgraded spans (e.g. an NHS-shaped number that fails its checksum is
+   * kept as REFERENCE_ID but must lose to an overlapping PHONE match).
+   */
+  priorityOverride?: number;
 }
 
 export interface DetectionResult {
@@ -68,10 +75,49 @@ export function runRules(text: string): Span[] {
       const captureIdx = capture
         ? (m[0].lastIndexOf(capture) >= 0 ? m[0].lastIndexOf(capture) : m[0].indexOf(capture))
         : -1;
-      const captureStart =
+      let captureStart =
         capture && captureIdx >= 0 ? m.index + captureIdx : undefined;
-      const captureEnd =
+      let captureEnd =
         capture && captureIdx >= 0 ? captureStart! + capture.length : undefined;
+      let spanEnd = m.index + m[0].length;
+
+      // Special filter: NAME captures — case-insensitive rules ('gi') lose
+      // the capitalisation guard baked into the pattern, so "specialist nurse
+      // home visit" captures "home visit" as a name. Trim the capture to the
+      // leading run of plausible name words; drop the span if none remain.
+      // Case-sensitive NAME rules keep their guard and are left alone (the
+      // FHIR JSON rule's capture legitimately starts with a quote character).
+      if (
+        rule.label === 'NAME' &&
+        rule.pattern.flags.includes('i') &&
+        capture &&
+        captureStart !== undefined
+      ) {
+        const keptLen = trimNameCapture(capture);
+        if (keptLen === null) continue;
+        if (keptLen < capture.length) {
+          const newCaptureEnd = captureStart + keptLen;
+          // The capture sits at the tail of these matches — shrink the span
+          // with it so trailing non-name words are not redacted.
+          if (captureEnd === spanEnd) spanEnd = newCaptureEnd;
+          captureEnd = newCaptureEnd;
+        }
+      }
+
+      // Special filter: NHS number — the 3-3-4 digit shape also matches phone
+      // numbers; only label it NHS_NUMBER when the mod-11 checksum holds.
+      // Checksum failures are still redacted (leak beats mislabel) but as
+      // REFERENCE_ID with a priority below PHONE, so a phone number that
+      // happens to have the NHS shape resolves to its correct PHONE label
+      // while a bare 10-digit code the phone rule can't see stays covered.
+      let label = rule.label;
+      let category = rule.category;
+      let priorityOverride: number | undefined;
+      if (rule.label === 'NHS_NUMBER' && !isValidNhsNumber(m[0])) {
+        label = 'REFERENCE_ID';
+        category = 'HIPAA';
+        priorityOverride = 65; // below PHONE (70)
+      }
 
       // Special filter: ICD-10 — only flag if it's a rare-disease code.
       let rareTier: RareIcdTier | undefined;
@@ -92,19 +138,62 @@ export function runRules(text: string): Span[] {
 
       spans.push({
         start: m.index,
-        end: m.index + m[0].length,
-        text: m[0],
-        label: rule.label,
-        category: rule.category,
+        end: spanEnd,
+        text: text.slice(m.index, spanEnd),
+        label,
+        category,
         source: 'rule',
         confidence: 1,
         captureStart,
         captureEnd,
         rareTier,
+        priorityOverride,
       });
     }
   }
   return spans;
+}
+
+// Lowercase words that may legitimately lead into a capitalised name word
+// ("al-Hashimi", "van der Berg", "della Rovere").
+const NAME_PARTICLES = new Set([
+  'al', 'el', 'bin', 'binti', 'van', 'von', 'der', 'den', 'de', 'del',
+  'della', 'di', 'da', 'ter', 'ten', 'la', 'le',
+]);
+
+/**
+ * Length (in characters of the original capture) of the leading run of
+ * plausible name words, or null when the capture contains none. A word
+ * qualifies when it starts with a capital, or is a lowercase particle
+ * (possibly hyphenated into a capitalised remainder, e.g. "al-Hashimi").
+ * Trailing bare particles are dropped; at least one capitalised word must
+ * survive.
+ */
+export function trimNameCapture(capture: string): number | null {
+  const wordRe = /\S+/g;
+  const words: Array<{ text: string; end: number }> = [];
+  let wm: RegExpExecArray | null;
+  while ((wm = wordRe.exec(capture))) {
+    words.push({ text: wm[0], end: wm.index + wm[0].length });
+  }
+
+  let kept = 0;
+  for (const w of words) {
+    if (/^\p{Lu}/u.test(w.text)) {
+      kept++;
+      continue;
+    }
+    const base = w.text.split(/[-']/, 1)[0].toLowerCase();
+    if (NAME_PARTICLES.has(base)) {
+      kept++;
+      continue;
+    }
+    break;
+  }
+  // Strip trailing words with no capital letter (bare particles).
+  while (kept > 0 && !/\p{Lu}/u.test(words[kept - 1].text)) kept--;
+  if (kept === 0) return null;
+  return words[kept - 1].end;
 }
 
 /**
@@ -179,7 +268,7 @@ const PRIORITY_BY_LABEL: Map<IdentifierLabel, number> = (() => {
 })();
 
 function priorityOf(span: Span): number {
-  return PRIORITY_BY_LABEL.get(span.label) ?? 50;
+  return span.priorityOverride ?? PRIORITY_BY_LABEL.get(span.label) ?? 50;
 }
 
 /**

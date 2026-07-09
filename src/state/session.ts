@@ -111,6 +111,12 @@ export function getSession(): SessionState {
   return state;
 }
 
+// Dev-only inspection hook so QA can read pipeline state (e.g. which values
+// validation flagged) from the browser console. Stripped from production.
+if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
+  (window as unknown as { __psSession: () => SessionState }).__psSession = getSession;
+}
+
 export function updateSession(patch: Partial<SessionState>): void {
   state = { ...state, ...patch };
   for (const l of listeners) l(state);

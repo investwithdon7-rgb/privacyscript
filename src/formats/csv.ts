@@ -5,9 +5,10 @@
  * list, run the engine on the joined leaf text, then write the de-identified
  * values back to a CSV.
  *
- * Column hints: any column header containing 'name', 'phone', 'email', etc.
- * is *not* used to skip detection — the engine catches those by content. The
- * header is only used to label rows in the audit log and for the diff viewer.
+ * Column hints: headers never SKIP detection — the engine still scans every
+ * value by content. Headers that clearly denote names/addresses additionally
+ * FORCE redaction of that column's values (see forcedLabelForCsvColumn),
+ * because isolated surnames give the NER model nothing to work with.
  *
  * Numeric / boolean / date columns are processed exactly like text columns
  * because they may still contain PII (a "deceasedBoolean" doesn't, but a
@@ -15,6 +16,7 @@
  */
 
 import Papa from 'papaparse';
+import type { IdentifierLabel } from '@/lib/identifiers';
 
 export interface CsvLeaf {
   row: number;
@@ -59,6 +61,29 @@ export function parseCsv(raw: string): CsvIngest {
     }
   });
   return { headers, rows, leaves };
+}
+
+/**
+ * Structural PII forcing for CSV.
+ *
+ * A column headed "family" or "surname" IS a name column — its values are
+ * redacted even when regex/NER produce no evidence (isolated surnames carry
+ * no sentence context for the NER model to work with).
+ */
+const CSV_NAME_COLUMN =
+  /^(?:family|given|surname|forename|middle[_\s]?name|first[_\s]?name|last[_\s]?name|full[_\s]?name|patient[_\s]?name|maiden[_\s]?name|name)$/i;
+const CSV_ADDRESS_COLUMN = /^(?:street|city|town|district|line[_\s]?\d*)$/i;
+
+export function forcedLabelForCsvColumn(column: string): IdentifierLabel | null {
+  const trimmed = column.trim();
+  // FHIR-flattened exports use dotted headers ("name.family", "address.line") —
+  // match on the leaf segment, and treat any address.* column as an address
+  // except country (a country code alone identifies nobody).
+  const leaf = trimmed.split('.').pop()!.trim();
+  if (CSV_NAME_COLUMN.test(leaf)) return 'NAME';
+  if (/address/i.test(trimmed) && !/country/i.test(trimmed)) return 'ADDRESS_LINE';
+  if (CSV_ADDRESS_COLUMN.test(leaf)) return 'ADDRESS_LINE';
+  return null;
 }
 
 export function reconstructCsv(

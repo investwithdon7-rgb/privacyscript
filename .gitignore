@@ -14,3 +14,9 @@ public/wasm/
 .wrangler/
 tsconfig.tsbuildinfo
 *.zip
+
+# Internal business documents - not for the public repo
+PRIVACYSCRIPT_OVERVIEW.md
+PrivacyScript_Contract_Build_Spec.md
+marketing/
+.leak-harness.cjs

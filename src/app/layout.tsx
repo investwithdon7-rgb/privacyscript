@@ -43,12 +43,29 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {children}
         <script
           dangerouslySetInnerHTML={{
-            __html: `
+            __html:
+              process.env.NODE_ENV === 'production'
+                ? `
               if ('serviceWorker' in navigator) {
                 window.addEventListener('load', function() {
                   navigator.serviceWorker.register('/privacyscript/sw.js')
                     .catch(function() { /* SW registration failure is non-fatal */ });
                 });
+              }
+            `
+                : `
+              // Dev: no service worker. Unregister any stale one and clear its
+              // caches — a cached production shell served against the dev
+              // server breaks navigation with 404 chunks.
+              if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.getRegistrations().then(function(rs) {
+                  rs.forEach(function(r) { r.unregister(); });
+                });
+                if (window.caches) {
+                  caches.keys().then(function(ks) {
+                    ks.forEach(function(k) { caches.delete(k); });
+                  });
+                }
               }
             `,
           }}

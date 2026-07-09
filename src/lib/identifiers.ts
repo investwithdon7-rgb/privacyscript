@@ -126,12 +126,17 @@ const IPV6_PATTERN = /\b(?:[A-F0-9]{1,4}:){7}[A-F0-9]{1,4}\b/gi;
 const BIOMETRIC_PATTERN =
   /\b(?:fingerprint|thumbprint|retina(?:l)?\s+scan|iris\s+scan|voice\s+(?:sample|print|recording)|biometric)\b/gi;
 
-// US ZIP — 5-digit or 9-digit, plus geographic context cues.
-const US_ZIP_PATTERN = /\b\d{5}(?:-\d{4})?\b/g;
+// US ZIP — 5-digit or 9-digit. The lookbehind excludes standards designations
+// ("ISO/IEC 42001", "ISO 27001", "IEEE 29148") that share the 5-digit shape.
+const US_ZIP_PATTERN =
+  /(?<!(?:ISO|IEC|RFC|DIN|ANSI|IEEE|NIST|EN|BS|SP)[\s\/\-])\b\d{5}(?:-\d{4})?\b/g;
 
-// Address line — heuristic: number + street name + suffix.
-const ADDRESS_PATTERN =
-  /\b\d{1,6}\s+[A-Z][A-Za-z'.\-]*(?:\s+[A-Z][A-Za-z'.\-]*)*\s+(?:Street|St\.?|Avenue|Ave\.?|Road|Rd\.?|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Court|Ct\.?|Way|Place|Pl\.?|Square|Sq\.?|Crescent|Cres\.?|Close|Terrace|Parade)\b/g;
+// Address line — heuristic: number + street name + suffix. Unicode-aware
+// street-name words ("Dún Laoghaire Quay").
+const ADDRESS_PATTERN = new RegExp(
+  String.raw`\b\d{1,6}\s+\p{Lu}[\p{L}'.\-]*(?:\s+\p{Lu}[\p{L}'.\-]*)*\s+(?:Street|St\.?|Avenue|Ave\.?|Road|Rd\.?|Boulevard|Blvd\.?|Lane|Ln\.?|Drive|Dr\.?|Court|Ct\.?|Way|Place|Pl\.?|Square|Sq\.?|Crescent|Cres\.?|Close|Terrace|Parade|Causeway|Row|Walk|Grove|Gardens|Mews|Rise|Quay|Wharf|Gate|Green|Hill|View|Park)\b`,
+  'gu'
+);
 
 /* ----------------------------------------------------------------------------
  * EU / UK identifiers
@@ -148,10 +153,13 @@ const UK_NINO_PATTERN =
 const UK_POSTCODE_PATTERN =
   /\b(?:GIR\s?0AA|[A-PR-UWYZ](?:[0-9]{1,2}|[A-HK-Y][0-9]|[A-HK-Y][0-9][0-9ABEHMNPRV-Y]|[0-9][A-HJKPS-UW])\s?[0-9][ABD-HJLNP-UW-Z]{2})\b/gi;
 
-// EU postcodes (common shapes: DE 5 digits, FR 5 digits, NL 4+2chars, etc).
-// Conservative — labelled context to avoid eating year/MRN matches.
+// EU postcodes (common shapes: DE/FR/IT/ES 5 digits, DK/AT/CH/NL 4 digits,
+// NL "1012 AB", PL "12-345", PT "1234-567"). Requires BOTH a labelled context
+// and a value that starts with a digit. The abbreviations are case-sensitive
+// (pattern is 'g', not 'gi') — a 'gi' match on CAP/CP made prose words like
+// "capable" and "capability" trigger this rule and swallow the following text.
 const EU_POSTCODE_PATTERN =
-  /\b(?:postcode|post\s+code|postal\s+code|PLZ|CP|CAP|ZIP)\s*[:.\-]?\s*([A-Z0-9\-\s]{3,10})/gi;
+  /\b(?:[Pp]ost\s?code|[Pp]ostal\s+code|PLZ|CP|CAP|ZIP)\b\s*[:.\-]?\s*(\d{2}-\d{3}|\d{4}-\d{3}|\d{4}\s?[A-Za-z]{2}|\d{3,5})\b/g;
 
 // Denmark CPR: ddmmyy-xxxx (10 digits with dash).
 const CPR_PATTERN = /\b\d{6}-\d{4}\b/g;
@@ -192,8 +200,10 @@ const INSTITUTION_PATTERN =
 const ETHNICITY_PATTERN =
   /\b(?:White|Black|Asian|Hispanic|Latino|Latina|Latinx|Caucasian|African[\s\-]?American|Native[\s\-]?American|Pacific[\s\-]?Islander|Mixed[\s\-]?race|Arab|Indigenous)\b/gi;
 
+// Value class excludes newlines — with \s the capture ran across the line
+// break and swallowed the next field's label ("retired schoolteacher\nEthnicity").
 const OCCUPATION_PATTERN =
-  /\b(?:occupation|job|profession|employed\s+as)\s*[:.\-]?\s*([A-Z][A-Za-z\s\-]{2,40})/gi;
+  /\b(?:occupation|job|profession|employed\s+as)[ \t]*[:.\-]?[ \t]*([A-Za-z][A-Za-z \t\-]{2,40})/gi;
 
 // "Age 92", "age: 95", "94 years old" — require explicit context to avoid
 // matching unrelated 2-3 digit numbers (postcodes, ICD codes, lab values).
@@ -233,25 +243,59 @@ const REFERENCE_PATTERN =
  * fallback for the first-load case where the NER model has not yet downloaded.
  * --------------------------------------------------------------------------*/
 
+// Note: word joins inside the captured name use [ \t]+ (not \s+) so a name
+// cannot run across a line break and swallow the next line's field label
+// ("Eveline Achterberg\nDOB" was captured as a single name).
+
+// One name word: a capitalised word (Unicode-aware — "Hövding", "Ó Murchadha")
+// or an initial ("S."), optionally led by lowercase particles so
+// "Yusuf al-Hashimi" and "Anna van der Berg" are captured whole.
+// IMPORTANT: patterns built on this that carry the 'i' flag lose the
+// capitalisation guard — the detect stage re-imposes it by trimming captures
+// to the leading run of plausible name words (see trimNameCapture).
+const NAME_WORD = String.raw`(?:(?:al|el|bin|binti|van|von|der|den|de|del|della|di|da|ter|ten|la|le)[-' ]){0,2}(?:\p{Lu}\.|\p{Lu}[\p{L}\-']{1,30})`;
+
 // 1. Honorific prefix: "Dr Marcus Holloway", "Mrs Achterberg", "Prof Singh".
 //    Capture group = name only (honorific is not part of the identifier).
-const NAME_HONORIFIC_PATTERN =
-  /\b(?:Dr\.?|Prof\.?|Mr\.?|Mrs\.?|Ms\.?|Miss|Sister)\s+([A-Z][A-Za-z\-']{1,30}(?:\s+[A-Z][A-Za-z\-']{1,30}){0,2})\b/g;
+const NAME_HONORIFIC_PATTERN = new RegExp(
+  String.raw`\b(?:Dr\.?|Prof\.?|Mr\.?|Mrs\.?|Ms\.?|Miss|Sister)[ \t]+(${NAME_WORD}(?:[ \t]+${NAME_WORD}){0,2})\b`,
+  'gu'
+);
 
 // 2. Professional credential suffix: "Bernadette Aikens, RN" / "Holloway, FRCP".
 //    Capture = name before the comma; credentials left intact.
-const NAME_CREDENTIAL_PATTERN =
-  /\b([A-Z][A-Za-z\-']{1,30}(?:\s+[A-Z][A-Za-z\-']{1,30}){1,3})\s*,\s*(?:FRCP(?:E|CH)?|MRCP(?:CH)?|FRCPsych|MRCPsych|FRCGP|MRCGP|FRCS|FRCR|FRCOG|RN|RGN|MBChB|MBBS)\b/g;
+const NAME_CREDENTIAL_PATTERN = new RegExp(
+  String.raw`\b(${NAME_WORD}(?:[ \t]+${NAME_WORD}){1,3})[ \t]*,[ \t]*(?:FRCP(?:E|CH)?|MRCP(?:CH)?|FRCPsych|MRCPsych|FRCGP|MRCGP|FRCS|FRCR|FRCOG|RN|RGN|MBChB|MBBS)\b`,
+  'gu'
+);
 
 // 3. Labelled name field: "Patient name: Eveline Achterberg", "Next of kin: Pieter…",
-//    "Completed by: Dr Priya Iyer", "On behalf of: Dr Marcus Holloway".
-const NAME_FIELD_PATTERN =
-  /\b(?:patient(?:'s)?\s+name|name\s+of\s+patient|next\s+of\s+kin|completed\s+by|on\s+behalf\s+of|signed\s+by)\s*[:=\-]?\s*(?:Dr\.?\s+|Prof\.?\s+)?([A-Z][A-Za-z\-']{1,30}(?:\s+[A-Z][A-Za-z\-']{1,30}){1,3})/gi;
+//    "Completed by: Dr Priya Iyer", "typed by S. Roussakov".
+const NAME_FIELD_PATTERN = new RegExp(
+  String.raw`\b(?:patient(?:'s)?\s+name|name\s+of\s+patient|next\s+of\s+kin|completed\s+by|on\s+behalf\s+of|signed\s+by|typed\s+by|dictated\s+by|checked\s+by|reported\s+by)\s*[:=\-]?\s*(?:Dr\.?[ \t]+|Prof\.?[ \t]+)?(${NAME_WORD}(?:[ \t]+${NAME_WORD}){1,3})`,
+  'giu'
+);
 
 // 4. Clinical staff role + name: "specialist nurse Karoline Stenberg",
-//    "Caldicott Guardian: Dr Faisal Rehman".
-const NAME_STAFF_ROLE_PATTERN =
-  /\b(?:specialist\s+nurse|heart\s+failure\s+nurse|clinical\s+nurse|charge\s+nurse|ward\s+sister|caldicott\s+guardian|named\s+nurse|clinical\s+lead)\s*[:.\-]?\s*(?:Dr\.?\s+)?([A-Z][A-Za-z\-']{1,30}(?:\s+[A-Z][A-Za-z\-']{1,30}){0,2})\b/gi;
+//    "Caldicott Guardian: Dr Faisal Rehman", "secretary Maureen Pollock".
+const NAME_STAFF_ROLE_PATTERN = new RegExp(
+  String.raw`\b(?:specialist\s+nurse|heart\s+failure\s+nurse|clinical\s+nurse|charge\s+nurse|ward\s+sister|caldicott\s+guardian|named\s+nurse|clinical\s+lead|case\s+coordinator|(?:medical\s+)?secretary)[ \t]*[:.\-]?[ \t]*(?:Dr\.?[ \t]+)?(${NAME_WORD}(?:[ \t]+${NAME_WORD}){0,2})\b`,
+  'giu'
+);
+
+// 5. Relationship context: "his wife Asma al-Hashimi", "her daughter, Dr
+//    Layla al-Hashimi", "their son Pieter". Clinical letters routinely name
+//    relatives this way and the bare forename otherwise has no anchor.
+const NAME_RELATION_PATTERN = new RegExp(
+  String.raw`\b(?:his|her|their)[ \t]+(?:wife|husband|partner|daughter|son|mother|father|brother|sister|carer|guardian)[ \t]*,?[ \t]*(?:Dr\.?[ \t]+|Mrs?\.?[ \t]+|Ms\.?[ \t]+)?(${NAME_WORD}(?:[ \t]+${NAME_WORD}){0,2})\b`,
+  'giu'
+);
+
+// 6. FHIR JSON name fields in RAW json text (batch mode and pasted bundles
+//    process the JSON as plain text, where the main flow's path-based forcing
+//    does not apply). `"family": "Achterberg"` / `"given": ["Eveline"]`.
+const FHIR_JSON_NAME_PATTERN =
+  /"(?:family|maidenName|prefix|suffix)"\s*:\s*"([^"\n]{1,60})"|"given"\s*:\s*\[([^\]\n]{1,200})\]|"given"\s*:\s*"([^"\n]{1,60})"/g;
 
 /* ----------------------------------------------------------------------------
  * Rule list
@@ -305,6 +349,8 @@ export const IDENTIFIER_RULES: IdentifierRule[] = [
   { label: 'NAME', category: 'HIPAA', description: 'Name (labelled field: patient name, next of kin…)', pattern: NAME_FIELD_PATTERN, priority: 85 },
   { label: 'NAME', category: 'HIPAA', description: 'Name (professional credential suffix: FRCP, RN…)', pattern: NAME_CREDENTIAL_PATTERN, priority: 84 },
   { label: 'NAME', category: 'HIPAA', description: 'Name (clinical staff role context: specialist nurse, Caldicott Guardian…)', pattern: NAME_STAFF_ROLE_PATTERN, priority: 83 },
+  { label: 'NAME', category: 'HIPAA', description: 'Name (relationship context: his wife, her daughter…)', pattern: NAME_RELATION_PATTERN, priority: 83 },
+  { label: 'NAME', category: 'HIPAA', description: 'Name (FHIR JSON field: family, given…)', pattern: FHIR_JSON_NAME_PATTERN, priority: 86 },
 
   // Quasi-identifiers (flagged, not auto-redacted by default)
   { label: 'RARE_DISEASE_ICD', category: 'QUASI', description: 'ICD-10 code (review for rare disease)', pattern: ICD10_PATTERN, priority: 40 },
@@ -363,4 +409,25 @@ export function rareIcdTier(code: string): RareIcdTier | null {
 
 export function isRareICD(code: string): boolean {
   return rareIcdTier(code) !== null;
+}
+
+/**
+ * NHS number mod-11 check digit (NHS Data Dictionary). Any 3-3-4 digit group
+ * matches the NHS regex shape — including most phone numbers — so the engine
+ * only labels a candidate NHS_NUMBER when the checksum holds. Invalid
+ * candidates are downgraded to REFERENCE_ID by the detect engine (still
+ * redacted; an overlapping PHONE match wins the label).
+ */
+export function isValidNhsNumber(candidate: string): boolean {
+  const digits = candidate.replace(/\D/g, '');
+  if (digits.length !== 10) return false;
+  let sum = 0;
+  for (let i = 0; i < 9; i++) {
+    sum += parseInt(digits[i], 10) * (10 - i);
+  }
+  const remainder = sum % 11;
+  let check = 11 - remainder;
+  if (check === 11) check = 0;
+  if (check === 10) return false; // 10 is never a valid check digit
+  return check === parseInt(digits[9], 10);
 }

@@ -35,16 +35,16 @@ export function UncertainDetectionsPanel({
     <div className="surface rounded-2xl p-6 mt-6">
       <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
         <div>
-          <h2 className="text-lg font-semibold">Uncertain detections</h2>
+          <h2 className="text-lg font-semibold">The engine is not sure about these</h2>
           <p className="text-sm text-[color:var(--color-muted)] mt-1">
-            These were detected with moderate confidence (50 to 85 percent). Review each one
-            and confirm or dismiss it.
+            Each item was detected with moderate confidence (50 to 85 percent).
+            Decide for each one: redact it, or keep the text as-is.
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
-          <span className="tag">{confirmed.length} confirmed</span>
-          <span className="tag">{dismissed.length} dismissed</span>
-          <span className="tag">{undecided.length} pending</span>
+          <span className="tag">{confirmed.length} to redact</span>
+          <span className="tag">{dismissed.length} kept as-is</span>
+          <span className="tag">{undecided.length} to decide</span>
         </div>
       </div>
 
@@ -56,7 +56,7 @@ export function UncertainDetectionsPanel({
           const labelColour = LABEL_COLOURS[s.label] ?? '#64748B';
 
           return (
-            <li key={key} className="py-4">
+            <li key={key} className="py-4" style={{ opacity: decision === undefined ? 1 : 0.75 }}>
               <div className="flex items-start gap-4">
                 {/* Text snippet */}
                 <div className="flex-1 min-w-0">
@@ -67,9 +67,17 @@ export function UncertainDetectionsPanel({
                     >
                       {s.label}
                     </span>
-                    <span className="font-semibold truncate max-w-xs">
+                    <span
+                      className="font-semibold truncate max-w-xs"
+                      style={{ textDecoration: decision === false ? 'line-through' : 'none' }}
+                    >
                       &ldquo;{s.text}&rdquo;
                     </span>
+                    {decision !== undefined && (
+                      <span className="mono text-xs text-[color:var(--color-muted)]">
+                        {decision ? 'will be redacted' : 'stays as-is'}
+                      </span>
+                    )}
                   </div>
 
                   {/* Confidence bar */}
@@ -102,7 +110,7 @@ export function UncertainDetectionsPanel({
                         : { borderColor: 'var(--color-border)', color: 'var(--color-muted)' }
                     }
                   >
-                    Confirm
+                    Redact
                   </button>
                   <button
                     type="button"
@@ -115,7 +123,7 @@ export function UncertainDetectionsPanel({
                         : { borderColor: 'var(--color-border)', color: 'var(--color-muted)' }
                     }
                   >
-                    Dismiss
+                    Keep as-is
                   </button>
                 </div>
               </div>
@@ -130,7 +138,7 @@ export function UncertainDetectionsPanel({
           onClick={() => spans.forEach((s) => onDecide(spanKey(s), true))}
           className="text-sm text-[color:var(--color-muted)] hover:text-white transition-colors"
         >
-          Confirm all
+          Redact all of these
         </button>
         <button
           type="button"

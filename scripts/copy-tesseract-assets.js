@@ -31,10 +31,12 @@
  * All four core variants are copied so the worker can pick the right one
  * regardless of SIMD / LSTM support in the browser environment.
  *
- * Language training data (.traineddata) is fetched on first use and cached in
- * IndexedDB; it is read from cdn.jsdelivr.net (added to connect-src in
- * public/_headers). It is not copied here because it is >10 MB and not
- * available in the npm package.
+ * Language training data (eng.traineddata.gz) is vendored in
+ * assets/tesseract-lang/ (committed — it is not part of any npm package) and
+ * copied to public/tesseract/lang/ by this script. Self-hosting it keeps the
+ * strict CSP intact and honours the zero-external-calls guarantee; letting
+ * tesseract.js fall back to its CDN default made OCR hang forever wherever
+ * the CDN is unreachable or blocked by CSP.
  *
  * POST-COPY PATCH: strip the inlined WASM data URI
  * -------------------------------------------------
@@ -168,5 +170,25 @@ for (const { src, dest, wasmFile } of FILES) {
   }
 }
 
-console.log(`[copy-tesseract-assets] done — ${copied}/${FILES.length} files copied, ${patched} patched (public/tesseract/)`);
+// ── Language data: vendored in assets/tesseract-lang/, served from
+//    public/tesseract/lang/. See header comment.
+const langSrcDir = path.join(__dirname, '..', 'assets', 'tesseract-lang');
+const langDestDir = path.join(destDir, 'lang');
+if (fs.existsSync(langSrcDir)) {
+  fs.mkdirSync(langDestDir, { recursive: true });
+  for (const f of fs.readdirSync(langSrcDir)) {
+    const src = path.join(langSrcDir, f);
+    if (!fs.statSync(src).isFile()) continue;
+    fs.copyFileSync(src, path.join(langDestDir, f));
+    const mb = (fs.statSync(src).size / 1_048_576).toFixed(1);
+    console.log(`[copy-tesseract-assets] lang/${f}  (${mb} MB)`);
+    copied++;
+  }
+} else {
+  console.warn(
+    '[copy-tesseract-assets] WARNING: assets/tesseract-lang/ missing — OCR language data will not be served and scanned-PDF OCR will fail.'
+  );
+}
+
+console.log(`[copy-tesseract-assets] done — ${copied} files copied, ${patched} patched (public/tesseract/)`);
 console.log(`[copy-tesseract-assets] basePath="${basePath}" (override with NEXT_PUBLIC_BASE_PATH)`);

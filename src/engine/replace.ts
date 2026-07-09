@@ -17,6 +17,13 @@ export interface ReplacementResult {
   dateShiftDays?: number;
   /** The DMY/MDY interpretation chosen for this document. Exposed for the audit log. */
   dateFormatHint?: DateFormatHint;
+  /**
+   * Count of verbatim residual replacements made by the consistency sweep —
+   * occurrences of an already-replaced original that no detection span
+   * covered (e.g. a name caught once via "Dr X" context but repeated bare
+   * elsewhere). Always replaced with the same token as the spanned occurrence.
+   */
+  residualSweeps?: number;
 }
 
 interface ReplaceOptions {
@@ -129,7 +136,10 @@ export async function replaceSpans(
   }
 
   // ── Pass 4: assemble output linearly (single forward walk) ──────────────
+  // Untouched-text segment indexes are tracked so the residual sweep below
+  // can never touch an inserted replacement token.
   const segments: string[] = [];
+  const untouchedIdx: number[] = [];
   let cursor = 0;
   for (const t of tokenSpecs) {
     if (t.start < cursor) {
@@ -142,13 +152,54 @@ export async function replaceSpans(
       continue;
     }
     const replacement = cache.get(keyOf(t.span.label, t.original))!;
-    if (t.start > cursor) segments.push(text.slice(cursor, t.start));
+    if (t.start > cursor) {
+      untouchedIdx.push(segments.length);
+      segments.push(text.slice(cursor, t.start));
+    }
     segments.push(replacement);
     cursor = t.end;
     mapping[t.original] = replacement;
     replacements.push({ span: t.span, original: t.original, replacement });
   }
-  if (cursor < text.length) segments.push(text.slice(cursor));
+  if (cursor < text.length) {
+    untouchedIdx.push(segments.length);
+    segments.push(text.slice(cursor));
+  }
+
+  // ── Pass 5: verbatim residual sweep ──────────────────────────────────────
+  // A replaced original that appears AGAIN outside any detection span is a
+  // verbatim leak (a name caught once via "Dr X" context but bare elsewhere;
+  // an MRN embedded in a document reference). Every remaining word-bounded
+  // occurrence is replaced with the same token, longest original first so
+  // "Northwell General Hospital" is swept before "Northwell". Same length
+  // floor (≥ 4 chars) as the validation stage — by construction validation
+  // can no longer find a mapping original in the output.
+  const sweepable = Object.entries(mapping)
+    .filter(([orig]) => orig.trim().length >= 4)
+    .sort((a, b) => b[0].length - a[0].length)
+    // Whitespace inside an original is matched flexibly (\s+): PDF text
+    // extraction produces variable spacing, so "Karoline Stenberg" must also
+    // sweep "Karoline  Stenberg" and "Karoline\nStenberg".
+    .map(([orig, repl]) => ({
+      repl,
+      probe: orig.trim().split(/\s+/)[0],
+      re: new RegExp(`(?<!\\w)${flexibleWhitespacePattern(orig)}(?!\\w)`, 'g'),
+    }));
+  let residualSweeps = 0;
+  if (sweepable.length > 0) {
+    for (const idx of untouchedIdx) {
+      let seg = segments[idx];
+      for (const { re, repl, probe } of sweepable) {
+        if (!seg.includes(probe)) continue;
+        re.lastIndex = 0;
+        seg = seg.replace(re, () => {
+          residualSweeps++;
+          return repl;
+        });
+      }
+      segments[idx] = seg;
+    }
+  }
 
   return {
     text: segments.join(''),
@@ -156,7 +207,21 @@ export async function replaceSpans(
     replacements,
     dateShiftDays,
     dateFormatHint,
+    residualSweeps,
   };
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Escape an original for regex use, with any internal whitespace run matching \s+. */
+export function flexibleWhitespacePattern(original: string): string {
+  return original
+    .trim()
+    .split(/\s+/)
+    .map(escapeRegExp)
+    .join('\\s+');
 }
 
 /* ----------------------------------------------------------------------------
