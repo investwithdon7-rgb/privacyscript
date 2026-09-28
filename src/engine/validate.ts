@@ -86,7 +86,9 @@ export async function validate(
       // dodge the exact-match isOwnToken check, so any span overlapping a
       // token range positionally is discarded — it can only be the token.
       const tokenRanges: Array<[number, number]> = [];
-      const tokenRe = /\[[A-Z_]+(?:-[A-F0-9]{6,16})?\]/g;
+      // Also transcript labels: "[Person 2]", "[Participant 1]", "[Interviewer]".
+      const tokenRe =
+        /\[(?:[A-Z_]+(?:-[A-F0-9]{6,16})?|(?:Person|Organisation|Address|Email|Phone number|Link|Participant|Interviewer)(?: \d+)?|identifying detail removed)\]/g;
       let tm: RegExpExecArray | null;
       while ((tm = tokenRe.exec(deidentifiedText))) {
         tokenRanges.push([tm.index, tm.index + tm[0].length]);

@@ -27,6 +27,18 @@ import {
 } from '@/engine/compliance';
 import { getSession, updateSession } from '@/state/session';
 import {
+  analyseTranscript,
+  contextualFlags,
+  dropStructural,
+  nameMentionSpans,
+  passageSpan,
+  relationshipNames,
+  speakerSpans,
+  spokenIdentifierSpans,
+  transcriptLabeller,
+  type TranscriptState,
+} from '@/engine/transcript';
+import {
   applyPlans,
   detectPlatform,
   GENERALISER_LABELS,
@@ -261,11 +273,52 @@ export async function ingestAndDetect(file: File): Promise<void> {
       stageIndex: 1,
     });
 
+    // Interview / focus-group transcripts (plain text, captions, Word).
+    const transcriptInfo =
+      effectiveFormat === 'TEXT' || effectiveFormat === 'DOCX' ? analyseTranscript(text) : null;
+    if (transcriptInfo) {
+      forcedSpans = [...forcedSpans, ...speakerSpans(text, transcriptInfo), ...spokenIdentifierSpans(text)];
+    }
+
     // Stage 2: DETECT
     // Forced spans (structural PII from FHIR paths / HL7 fields / CSV headers)
     // carry confidence 1, so they always land in the auto-accepted bucket.
     const nerSpans = await runClinicalNER(text);
-    const detection = detect(text, [...nerSpans, ...forcedSpans]);
+    let detection = detect(text, [...nerSpans, ...forcedSpans]);
+    let transcript: TranscriptState | null = null;
+    if (transcriptInfo) {
+      // Timestamps and cue IDs are structure, not identifiers.
+      let spans = dropStructural(detection.spans, transcriptInfo);
+      const quasiSpans = dropStructural(detection.quasiSpans, transcriptInfo);
+      // A name found once ("my daughter Amira", or confidently by the model)
+      // is replaced at every mention, whatever its case.
+      const knownNames = [
+        ...relationshipNames(text),
+        ...spans
+          .filter((sp) => sp.label === 'NAME' && (sp.source === 'rule' || (sp.confidence ?? 1) >= 0.9))
+          .map((sp) => text.slice(sp.captureStart ?? sp.start, sp.captureEnd ?? sp.end)),
+      ];
+      spans = [
+        ...spans,
+        ...nameMentionSpans(text, knownNames, transcriptInfo, [...spans, ...quasiSpans]),
+      ].sort((a, b) => a.start - b.start);
+      const counts: Record<string, number> = {};
+      for (const sp of [...spans, ...quasiSpans]) counts[sp.label] = (counts[sp.label] ?? 0) + 1;
+      detection = {
+        ...detection,
+        spans,
+        quasiSpans,
+        counts,
+        uncertainSpans: dropStructural(detection.uncertainSpans ?? [], transcriptInfo),
+      };
+      transcript = {
+        info: transcriptInfo,
+        readable: true,
+        flags: contextualFlags(text, transcriptInfo),
+        flagDecisions: {},
+        confirmed: false,
+      };
+    }
 
     // Default-on suppression for quasi-identifiers.
     const autoRedact = new Set<string>();
@@ -287,6 +340,7 @@ export async function ingestAndDetect(file: File): Promise<void> {
 
     updateSession({
       detection,
+      transcript,
       quasiToRedact: autoRedact,
       stageIndex: 2,
     });
@@ -313,6 +367,7 @@ export async function runComplianceCheck(
     sourceBytes: null,
     scanProgress: null,
     tabular: null,
+    transcript: null,
     quasiConfirmed: false,
     quasiToRedact: new Set(),
     uncertainSpanDecisions: {},
@@ -519,7 +574,12 @@ export async function finalise(): Promise<void> {
     );
 
     // 3. Merge in spans the user manually drew in the span editor.
-    const allSpans = [...activeSpans, ...s.userAddedSpans, ...confirmedUncertain];
+    // 4. Transcript passages the user chose to remove.
+    const tr = s.transcript;
+    const removedFlags = tr ? tr.flags.filter((f) => tr.flagDecisions[f.id] === 'remove') : [];
+    const passageSpans = removedFlags.map((f) => passageSpan(s.originalText!, f));
+
+    const allSpans = [...activeSpans, ...s.userAddedSpans, ...confirmedUncertain, ...passageSpans];
 
     const replacement = await replaceSpans(
       s.originalText,
@@ -529,6 +589,9 @@ export async function finalise(): Promise<void> {
         mode: s.mode,
         secret: secret ?? undefined,
         quasiToRedact: s.quasiToRedact,
+        labeller: tr
+          ? transcriptLabeller(tr.info, tr.readable, removedFlags.map((f) => f.text))
+          : undefined,
       }
     );
     const { COMPLIANCE_PROFILES } = await import('@/lib/constants');
@@ -633,6 +696,7 @@ export async function finalise(): Promise<void> {
         }
       : await reconstructOutput(s.format!, replacement);
     const tabularNotes = tab && tabularOut ? tabularAuditNotes(tab, tabularOut) : [];
+    if (tr) tabularNotes.push(...transcriptAuditNotes(tr));
     const outputSize = bytesOutput?.byteLength ?? textOutput?.length ?? 0;
     const audit = buildAuditLog({
       mode: s.mode,
@@ -716,6 +780,17 @@ function mergeTabularRisk(
 
   const level: RiskAssessment['level'] = k >= kThreshold ? 'LOW' : k >= 3 ? 'MEDIUM' : 'HIGH';
   return { ...base, level, kAnonymity: k, lDiversity: l, reasons, breakdown };
+}
+
+function transcriptAuditNotes(tr: TranscriptState): string[] {
+  const decisions = Object.values(tr.flagDecisions);
+  const named = tr.info.speakers.filter((sp) => sp.isName).length;
+  return [
+    `Source recognised as: ${tr.info.kindLabel} (${tr.info.speakers.length} speakers, ${tr.info.turnCount} turns).`,
+    `Speaker names replaced with role labels: ${named}.`,
+    `Replacement style: ${tr.readable ? 'readable labels ([Person 1])' : 'codes'}.`,
+    `Passages flagged for possible identification by context: ${tr.flags.length}; reviewed by user: removed ${decisions.filter((d) => d === 'remove').length}, kept ${decisions.filter((d) => d === 'keep').length}.`,
+  ];
 }
 
 function tabularAuditNotes(tab: TabularState, out: ApplyResult): string[] {

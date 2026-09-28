@@ -30,6 +30,12 @@ interface ReplaceOptions {
   mode: Mode;
   secret?: SessionSecret; // required in pseudonymise mode
   quasiToRedact: Set<string>; // quasi-identifier labels the user opted to redact
+  /**
+   * Optional replacement override (transcripts: "[Participant 1]",
+   * "[Person 2]"). Called once per unique (label, original) in document
+   * order; return null to use the mode's default replacement.
+   */
+  labeller?: (label: IdentifierLabel, original: string) => string | null;
 }
 
 /**
@@ -110,6 +116,12 @@ export async function replaceSpans(
     const key = keyOf(t.span.label, t.original);
     if (seenKeys.has(key)) continue;
     seenKeys.add(key);
+
+    const fixed = options.labeller?.(t.span.label, t.original);
+    if (fixed != null) {
+      cache.set(key, fixed);
+      continue;
+    }
 
     if (options.mode === 'PSEUDONYMISE') {
       if (!options.secret) {

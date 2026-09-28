@@ -42,12 +42,19 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
 
   const baseName = (s.filename ?? 'record').replace(/\.[^.]+$/, '');
   const isDocx = s.format === 'DOCX';
+  // Transcripts keep their caption format (.vtt / .srt) so players still load them.
+  const sourceExt = (s.filename ?? '').split('.').pop()?.toLowerCase() ?? '';
+  const keepTextExt = s.format === 'TEXT' && ['vtt', 'srt', 'md'].includes(sourceExt);
   const ext = isDocx
     ? docxExt(s.docxFormat)
-    : FORMAT_EXT[s.format ?? 'TEXT'] ?? 'txt';
+    : keepTextExt
+      ? sourceExt
+      : FORMAT_EXT[s.format ?? 'TEXT'] ?? 'txt';
   const mime = isDocx
     ? docxMime(s.docxFormat)
-    : MIME[s.format ?? 'TEXT'] ?? 'text/plain';
+    : keepTextExt && sourceExt === 'vtt'
+      ? 'text/vtt'
+      : MIME[s.format ?? 'TEXT'] ?? 'text/plain';
 
   const downloadRecord = () => {
     const filename = `${baseName}.deidentified.${ext}`;

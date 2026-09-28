@@ -8,6 +8,8 @@ import { QuasiIdentifierReview } from '@/components/QuasiIdentifierReview';
 import { UncertainDetectionsPanel } from '@/components/UncertainDetectionsPanel';
 import { SpanEditor } from '@/components/SpanEditor';
 import { SurveyColumnsPanel } from '@/components/SurveyColumnsPanel';
+import { TranscriptPanel } from '@/components/TranscriptPanel';
+import type { TranscriptState } from '@/engine/transcript';
 import { useSession } from '@/hooks/useSession';
 import { getSession, updateSession } from '@/state/session';
 import { finalise, spansInEngineColumns, tabularDataRows } from '@/hooks/useDeidentification';
@@ -99,8 +101,12 @@ export default function ProcessPage() {
   const columnsPending = !!tabular && !tabular.confirmed;
   const setTabular = (next: TabularState) => updateSession({ tabular: next });
 
-  /** Column setup still open — later review steps wait for it. */
-  const setupPending = columnsPending;
+  // ── Interview transcripts ─────────────────────────────────────────────
+  const transcript = s.transcript;
+  const transcriptPending = !!transcript && !transcript.confirmed;
+  const setTranscript = (next: TranscriptState) => updateSession({ transcript: next });
+  /** Column / transcript setup still open — later review steps wait for it. */
+  const setupPending = columnsPending || transcriptPending;
 
   // In a survey, detections inside identifier / quasi columns are handled by
   // the column plan — only show the ones in written/answer columns.
@@ -126,7 +132,7 @@ export default function ProcessPage() {
       <Brand subtitle="Processing" />
 
       <section className="mt-10">
-        <h1 className="text-3xl font-bold">{tabular ? 'Processing survey data' : 'Processing record'}</h1>
+        <h1 className="text-3xl font-bold">{tabular ? 'Processing survey data' : transcript ? 'Processing transcript' : 'Processing record'}</h1>
         <p className="text-[color:var(--color-muted)] mt-2 mono text-sm">
           {s.filename ?? 'record'} · {s.format ?? 'detecting…'} · {s.mode}
         </p>
@@ -195,6 +201,41 @@ export default function ProcessPage() {
                 ))}
               </div>
             </div>
+
+            {/* Transcripts: speakers + contextual passages come first */}
+            {transcript && s.mode && (
+              transcriptPending ? (
+                <TranscriptPanel
+                  transcript={transcript}
+                  mode={s.mode}
+                  onChange={setTranscript}
+                  onConfirm={() => {
+                    const nothingElse = quasiForReview.length === 0 && uncertainForReview.length === 0;
+                    updateSession({
+                      transcript: { ...transcript, confirmed: true },
+                      ...(nothingElse ? { quasiConfirmed: true } : {}),
+                    });
+                  }}
+                />
+              ) : (
+                <div className="surface rounded-2xl px-6 py-4 mt-8 flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-sm">
+                    <span style={{ color: 'var(--color-success)' }}>✓</span> Transcript reviewed
+                    <span className="text-[color:var(--color-muted)]">
+                      {' '}· {transcript.info.speakers.filter((sp) => sp.isName).length} speaker names replaced ·{' '}
+                      {Object.values(transcript.flagDecisions).filter((d) => d === 'remove').length} passages removed
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => setTranscript({ ...transcript, confirmed: false })}
+                  >
+                    Edit
+                  </button>
+                </div>
+              )
+            )}
 
             {/* Survey datasets: column plan comes first */}
             {tabular && s.mode && (

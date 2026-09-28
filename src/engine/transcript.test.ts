@@ -1,0 +1,207 @@
+/**
+ * Transcript support tests. All people, places and numbers are fictitious.
+ */
+
+import { describe, expect, it } from 'vitest';
+import { Crypto } from '@peculiar/webcrypto';
+import { detect } from '@/engine/detect';
+import { replaceSpans } from '@/engine/replace';
+import { generateSessionSecret } from '@/engine/crypto';
+import {
+  analyseTranscript,
+  contextualFlags,
+  dropStructural,
+  nameMentionSpans,
+  passageSpan,
+  relationshipNames,
+  speakerSpans,
+  spokenIdentifierSpans,
+  transcriptLabeller,
+  REMOVED_PASSAGE,
+} from '@/engine/transcript';
+
+if (typeof globalThis.crypto?.subtle === 'undefined') {
+  (globalThis as { crypto: Crypto }).crypto = new Crypto();
+}
+
+const VTT = `WEBVTT
+
+1
+00:00:01.000 --> 00:00:04.000
+<v Sarah Okafor>Thanks for joining. How have things been since the discharge?
+
+2
+00:00:04.500 --> 00:00:09.000
+<v Helen Carter>Honestly hard. My number is oh seven seven double oh, nine double oh one two three.
+
+3
+00:00:09.500 --> 00:00:12.000
+<v Sarah Okafor>Did anyone support you at home?
+
+4
+00:00:12.500 --> 00:00:18.000
+<v Helen Carter>My daughter, she works at the Co-op in Harehills. I'm the only Somali nurse on the ward.
+`;
+
+const TEAMS = `Sarah Okafor   0:03
+Can you tell me about your diagnosis?
+
+Helen Carter   0:09
+I was diagnosed on the fifth of March twenty twenty two. helen carter is what the letters say.
+
+Sarah Okafor   0:21
+And how old are you now?
+
+Helen Carter   0:25
+I'm ninety three next month.
+`;
+
+const LABELLED = `Interview date: 2024-05-01
+Interviewer: What matters most to you in your care?
+P01: Being listened to. Dr Patel was brilliant.
+Interviewer: Can you say more?
+P01: He always remembered my grandson James.
+`;
+
+describe('structure detection', () => {
+  it('parses WebVTT voice tags and cue timings', () => {
+    const info = analyseTranscript(VTT)!;
+    expect(info.kind).toBe('VTT');
+    expect(info.speakers.map((s) => s.label)).toEqual(['Sarah Okafor', 'Helen Carter']);
+    expect(info.speakers[0]).toMatchObject({ role: 'INTERVIEWER', display: 'Interviewer', isName: true });
+    expect(info.speakers[1]).toMatchObject({ role: 'PARTICIPANT', display: 'Participant 1' });
+    expect(info.structuralSpans.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('parses Teams/Otter "Name   0:03" headers', () => {
+    const info = analyseTranscript(TEAMS)!;
+    expect(info.kind).toBe('TIMESTAMPED');
+    expect(info.speakers).toHaveLength(2);
+    expect(info.speakers.find((s) => s.label === 'Sarah Okafor')!.role).toBe('INTERVIEWER');
+  });
+
+  it('parses "Label:" transcripts, ignores headings, keeps generic labels', () => {
+    const info = analyseTranscript(LABELLED)!;
+    expect(info.kind).toBe('LABELLED');
+    expect(info.speakers.map((s) => s.label)).toEqual(['Interviewer', 'P01']);
+    expect(info.speakers.every((s) => !s.isName)).toBe(true);
+  });
+
+  it('does not treat a clinical letter as a transcript', () => {
+    const letter = 'Date: 01/02/2024\nRe: John Smith\nDear Dr Jones,\nThank you for seeing this patient.\nNote: allergy to penicillin.';
+    expect(analyseTranscript(letter)).toBeNull();
+  });
+
+  it('keeps timestamps out of detection', () => {
+    const info = analyseTranscript(VTT)!;
+    const spans = dropStructural(detect(VTT).spans, info);
+    for (const s of spans) expect(s.text).not.toMatch(/^\d{2}:\d{2}/);
+  });
+});
+
+describe('speaker names', () => {
+  it('finds every mention, including lowercase speech-to-text', () => {
+    const info = analyseTranscript(TEAMS)!;
+    const spans = speakerSpans(TEAMS, info).map((s) => s.text);
+    expect(spans).toContain('Helen Carter');
+    expect(spans).toContain('helen carter');
+  });
+});
+
+describe('spoken identifiers', () => {
+  it('catches phone numbers read aloud, spoken dates and ages over 89', () => {
+    const labels = (t: string) => spokenIdentifierSpans(t).map((s) => [s.label, s.text]);
+    expect(labels('it is oh seven seven double oh, nine double oh one two three')[0][0]).toBe('PHONE');
+    expect(labels('diagnosed on the fifth of March twenty twenty two')).toContainEqual([
+      'DATE', 'the fifth of March twenty twenty two',
+    ]);
+    expect(labels("I'm ninety three next month")).toContainEqual(['AGE_OVER_89', 'ninety three']);
+  });
+
+  it('does not flag short counts or ordinary speech', () => {
+    expect(spokenIdentifierSpans('I have two or three good days a week, maybe one.')).toHaveLength(0);
+    expect(spokenIdentifierSpans("I'm fifty two and she's nine")).toHaveLength(0);
+  });
+});
+
+describe('contextual identifiers', () => {
+  it('flags unique descriptions and workplaces, without the speaker label', () => {
+    const info = analyseTranscript(VTT)!;
+    const flags = contextualFlags(VTT, info);
+    const reasons = flags.map((f) => f.reason);
+    expect(reasons).toContain('Says something unique about a person');
+    expect(reasons.some((r) => /works|family/.test(r))).toBe(true);
+    for (const f of flags) expect(f.text).not.toContain('Helen Carter');
+  });
+});
+
+describe('end to end with readable labels', () => {
+  async function run(text: string, mode: 'ANONYMISE' | 'PSEUDONYMISE', readable: boolean, removeFlags = false) {
+    const info = analyseTranscript(text)!;
+    const flags = contextualFlags(text, info);
+    const extra = [...speakerSpans(text, info), ...spokenIdentifierSpans(text)];
+    const removed = removeFlags ? flags : [];
+    const det = detect(text, extra);
+    const spans = [...dropStructural(det.spans, info), ...removed.map((f) => passageSpan(text, f))];
+    return replaceSpans(text, spans, [], {
+      mode,
+      secret: mode === 'PSEUDONYMISE' ? await generateSessionSecret() : undefined,
+      quasiToRedact: new Set(),
+      labeller: transcriptLabeller(info, readable, removed.map((f) => f.text)),
+    });
+  }
+
+  it('anonymise: speakers become roles, the spoken phone number is removed', async () => {
+    const out = await run(VTT, 'ANONYMISE', true);
+    expect(out.text).toContain('<v [Interviewer]>Thanks for joining.');
+    expect(out.text).toContain('<v [Participant 1]>');
+    expect(out.text).not.toMatch(/Helen|Okafor|Carter/);
+    expect(out.text).not.toContain('double oh');
+    expect(out.text).toContain('00:00:01.000 --> 00:00:04.000');
+  });
+
+  it('pseudonymise: lowercase name mentions map to the same participant label', async () => {
+    const out = await run(TEAMS, 'PSEUDONYMISE', true);
+    expect(out.text).not.toMatch(/helen|carter/i);
+    expect(out.text).toContain('[Participant 1] is what the letters say');
+    expect(out.mapping['Helen Carter']).toBe('[Participant 1]');
+    expect(out.text).toContain('0:03');
+  });
+
+  it('numbers third parties as [Person n] and removes passages the user chose', async () => {
+    const out = await run(VTT, 'ANONYMISE', true, true);
+    expect(out.text).toContain(REMOVED_PASSAGE);
+    expect(out.text).not.toContain('only Somali nurse');
+  });
+
+  it('keeps generic speaker labels untouched', async () => {
+    const out = await run(LABELLED, 'ANONYMISE', true);
+    expect(out.text).toContain('Interviewer: What matters');
+    expect(out.text).toContain('P01: Being listened to.');
+    expect(out.text).not.toContain('Patel');
+  });
+});
+
+describe('passage boundaries', () => {
+  it('starts flagged passages after the speaker label, including VTT voice tags', () => {
+    const info = analyseTranscript(VTT)!;
+    const flags = contextualFlags(VTT, info);
+    expect(flags.map((f) => f.text)).toContain('My daughter, she works at the Co-op in Harehills.');
+    for (const f of flags) expect(f.text).not.toMatch(/^[>:\s]/);
+  });
+});
+
+describe('name mentions', () => {
+  it('finds relationship names and every later mention in any case', () => {
+    const t = 'A: How is home?\nB: My daughter Amira helps.\nA: Good?\nB: amira says I do too much.\n';
+    const info = analyseTranscript(t)!;
+    expect(relationshipNames(t)).toEqual(['Amira']);
+    const found = nameMentionSpans(t, relationshipNames(t), info, []).map((s) => s.text);
+    expect(found).toEqual(['Amira', 'amira']);
+  });
+
+  it('treats the WEBVTT header as structure', () => {
+    const info = analyseTranscript(VTT)!;
+    expect(info.structuralSpans.some((s) => s.start === 0 && VTT.slice(s.start, s.end) === 'WEBVTT')).toBe(true);
+  });
+});

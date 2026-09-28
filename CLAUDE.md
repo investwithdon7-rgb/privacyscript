@@ -207,6 +207,20 @@ Each row is a person, so risk is measured across rows, not per record.
   (`*`) for up to 10% of rows. It never removes a column without the user.
 - Anonymise mode cannot continue past the column step while k < threshold.
 
+### Interview transcripts (TXT / DOCX / VTT / SRT) — `src/engine/transcript.ts`
+
+- **Structure**: WebVTT voice tags, SRT, Teams/Otter "Name   0:03" headers, "Name:" lines.
+  Timestamps, cue IDs and the WEBVTT header are excluded from detection; .vtt/.srt
+  download in their own format.
+- **Speakers**: real-name labels → "[Interviewer]" / "[Participant n]" (editable) at
+  every mention, case-insensitively; generic labels (P01, Interviewer) kept.
+- **Readable labels** (default): "[Person n]", "[Organisation n]"… via the
+  `labeller` option of `replaceSpans`; partial names join the fuller name's number.
+- **Speech**: phone numbers read aloud, spoken dates, spoken ages over 89. Names
+  found once (model, or "my daughter Amira") are replaced at every mention.
+- **Context**: sentences that identify without a name are flagged; the user must
+  keep or remove each before continuing. Free text is never auto-declared anonymous.
+
 ### Scanned PDF optimisation strategy
 
 Tesseract.js is the bottleneck. To make it usable, the v1 pipeline uses these techniques:
