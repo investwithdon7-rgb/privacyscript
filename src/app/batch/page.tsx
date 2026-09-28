@@ -111,7 +111,7 @@ export default function BatchPage() {
       await downloadKey(passphrase);
       setPassphrase('');
       setConfirmPassphrase('');
-      setKeyMessage({ ok: true, text: 'Key file saved. Store it separately from the data. Without the passphrase it cannot be opened.' });
+      setKeyMessage({ ok: true, text: 'Key file saved. Store it separately from the data. Without the passphrase it cannot be opened. Open it later from "Open a key file" on the home page.' });
     } catch (e) {
       setKeyMessage({ ok: false, text: (e as Error).message });
     }

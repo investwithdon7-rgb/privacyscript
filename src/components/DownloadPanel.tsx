@@ -206,6 +206,10 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
           >
             {keyDownloaded ? 'Download again' : 'Download encrypted key'}
           </button>
+          <p className="text-xs text-[color:var(--color-muted)] mt-3">
+            To look up a code or restore the original later, use{' '}
+            <a href="/privacyscript/key/" className="underline hover:text-white">Open a key file</a>.
+          </p>
         </div>
       ) : null}
     </div>

@@ -208,6 +208,9 @@ function Footer() {
           <a href="/privacyscript/batch/" className="hover:text-white transition-colors">
             Batch processing
           </a>
+          <a href="/privacyscript/key/" className="hover:text-white transition-colors">
+            Open a key file
+          </a>
           <span>v0.2 · {new Date().getUTCFullYear()}</span>
         </div>
       </div>

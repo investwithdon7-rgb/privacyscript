@@ -265,7 +265,7 @@ async function pseudonymise(
  * output (useful for verification and reproducible audit trails). Range is
  * [-365, +365] excluding 0.
  */
-async function deriveDateShift(secret: SessionSecret): Promise<number> {
+export async function deriveDateShift(secret: SessionSecret): Promise<number> {
   const sig = await crypto.subtle.sign(
     'HMAC',
     secret.hmacKey,
