@@ -103,7 +103,7 @@ export function DropZone({ accept, disabled, onFile }: DropZoneProps) {
             onChange={(e) => handleFiles(e.target.files)}
           />
           <div className="text-lg font-semibold mb-2">
-            Drop a health record here, or click to browse
+            Drop a record, transcript or survey here, or click to browse
           </div>
           <div className="text-sm text-[color:var(--color-muted)] mb-4">
             Plain text · Interview transcripts (TXT, DOCX, VTT, SRT) · FHIR R4 JSON · HL7 v2 · PDF · DOCX · DICOM (.dcm) · Surveys &amp; spreadsheets (CSV, XLSX, SPSS .sav: Qualtrics, REDCap, SurveyMonkey, MS Forms)
