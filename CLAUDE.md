@@ -372,6 +372,8 @@ The key file download is the only persistence mechanism. The user owns it entire
 | Age suppression | HIPAA §164.514(b)(2)(i) | Ages > 89 always rendered as "90+" |
 | No data processor relationship | GDPR Article 28 | Client-side only; no DPA required between user and tool |
 | Supply chain security | NIS2 Article 21 | Open source; no third-party API calls; auditable pipeline |
+| Research ethics / data management plan | REC / IRB conditions; funder DMP requirements | Audit log per file and batch summary record what was changed (no identifiers); user decisions on context-flagged transcript passages are logged. Supports, does not replace, the approving body's review |
+| Anonymisation of free text | GDPR Recital 26; UK ICO "motivated intruder" test | Transcripts require a person to keep/remove each flagged passage; output guidance prompts a final motivated-intruder read. Never auto-declared anonymous |
 
 ---
 

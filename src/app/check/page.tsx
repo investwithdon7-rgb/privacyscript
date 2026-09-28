@@ -119,7 +119,7 @@ export default function ComplianceCheckPage() {
             Step 2. Upload or paste a document
           </h2>
           <DropZone
-            accept=".txt,.json,.hl7,.pdf,.docx,.csv,.tsv,.dcm,.dicom"
+            accept=".txt,.vtt,.srt,.json,.hl7,.pdf,.docx,.csv,.tsv,.xlsx,.sav,.dcm,.dicom"
             disabled={processing}
             onFile={onFile}
           />
