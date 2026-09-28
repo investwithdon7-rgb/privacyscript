@@ -7,6 +7,8 @@ interface QuasiIdentifierReviewProps {
   redactSet: Set<string>;
   onToggle: (label: string) => void;
   onConfirm: () => void;
+  /** Label of the final button. */
+  confirmLabel?: string;
 }
 
 const LABEL_DESCRIPTIONS: Record<string, string> = {
@@ -24,6 +26,7 @@ export function QuasiIdentifierReview({
   redactSet,
   onToggle,
   onConfirm,
+  confirmLabel = 'Confirm and continue',
 }: QuasiIdentifierReviewProps) {
   const byLabel = new Map<string, Span[]>();
   for (const s of quasiSpans) {
@@ -35,17 +38,17 @@ export function QuasiIdentifierReview({
   return (
     <div className="surface rounded-2xl p-6 mt-8">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold">Quasi-identifiers detected</h2>
+        <h2 className="text-lg font-semibold">Other details that could identify someone</h2>
         <span className="tag">{labels.length} types · {quasiSpans.length} matches</span>
       </div>
       <p className="text-sm text-[color:var(--color-muted)] mb-4">
-        These fields are not direct identifiers but can re-identify a person in combination.
-        Decide which to redact before the pipeline continues.
+        Details like a job, ethnicity or a rare condition can point to one person when combined.
+        Tick the ones to hide.
       </p>
 
       {labels.length === 0 ? (
         <div className="text-sm text-[color:var(--color-muted)] mono">
-          None found. You can proceed.
+          None found. Nothing to decide here.
         </div>
       ) : (
         <ul className="divide-y divide-[color:var(--color-border)]">
@@ -81,7 +84,7 @@ export function QuasiIdentifierReview({
 
       <div className="mt-6 flex justify-end">
         <button type="button" onClick={onConfirm} className="btn-primary">
-          Confirm and continue
+          {confirmLabel}
         </button>
       </div>
     </div>

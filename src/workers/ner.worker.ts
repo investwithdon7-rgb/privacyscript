@@ -55,9 +55,14 @@ function pipeline() {
 }
 
 ctx.onmessage = async (e: MessageEvent) => {
-  const msg = e.data as { type: 'run' | 'cancel'; id: number; text?: string };
+  const msg = e.data as { type: 'run' | 'cancel' | 'load'; id: number; text?: string };
   if (msg.type === 'cancel') {
     cancelled.add(msg.id);
+    return;
+  }
+  if (msg.type === 'load') {
+    // Warm-up only; failures are reported through status messages.
+    pipeline().catch(() => undefined);
     return;
   }
   if (msg.type !== 'run') return;

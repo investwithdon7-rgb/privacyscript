@@ -11,7 +11,7 @@ import type { ComplianceProfileId } from '@/lib/constants';
 import { COMPLIANCE_PROFILES, DEFAULT_COMPLIANCE_PROFILE } from '@/lib/constants';
 import { resetSession, updateSession } from '@/state/session';
 import { ingestAndDetect } from '@/hooks/useDeidentification';
-import { ensureNerLoaded } from '@/engine/ner';
+import { preloadNer } from '@/engine/ner';
 
 export default function LandingPage() {
   const router = useRouter();
@@ -21,7 +21,7 @@ export default function LandingPage() {
 
   // Pre-warm the NER model while the user is setting up.
   useEffect(() => {
-    void ensureNerLoaded();
+    preloadNer();
   }, []);
 
   const profile = COMPLIANCE_PROFILES[profileId];

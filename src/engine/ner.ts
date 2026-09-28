@@ -460,6 +460,18 @@ export async function runClinicalNER(text: string, opts: NerRunOptions = {}): Pr
   });
 }
 
+/**
+ * Start loading the model in the background worker ahead of use, so the
+ * first document doesn't wait for it. Never loads on the page thread when a
+ * worker is available (that froze the page and loaded the model twice).
+ */
+export function preloadNer(): void {
+  if (typeof window === 'undefined') return;
+  const worker = getNerWorker();
+  if (worker) worker.postMessage({ type: 'load' });
+  else void ensureNerLoaded();
+}
+
 /** Stop any running detection. Pending calls reject with NerCancelledError. */
 export function cancelNer(): void {
   if (!nerWorker) return;
