@@ -1,7 +1,29 @@
 import Link from 'next/link';
 import { Brand } from '@/components/Brand';
 
-export const metadata = { title: 'User guide · PrivacyScript by TekDruid' };
+export const metadata = {
+  title: 'User guide: how to de-identify health data, transcripts and surveys',
+  description:
+    'How to use PrivacyScript to anonymise or pseudonymise patient records, interview transcripts and survey data in your browser before sharing or using AI tools.',
+  alternates: { canonical: 'https://tekdruid.com/privacyscript/guide/' },
+};
+
+/** Visible FAQ, also published as FAQPage structured data (same text). */
+const FAQ: Array<[string, string]> = [
+  ['Is my data uploaded anywhere?', 'No. PrivacyScript runs entirely in your browser. Files are read and processed on your device and never sent to a server. Only the name-detection model is downloaded once, and it is then stored by your browser.'],
+  ['What is the difference between anonymising and pseudonymising?', 'Anonymising removes identities for good and cannot be reversed, so the output can be used with AI tools or shared publicly. Pseudonymising replaces identities with codes that you can reverse with an encrypted key file; the data is still personal data under GDPR.'],
+  ['Can I de-identify interview transcripts before using ChatGPT or other AI tools?', 'Yes. PrivacyScript reads TXT, Word, VTT and SRT transcripts, including Zoom and Teams exports. Speaker names become Interviewer or Participant labels everywhere, other names become [Person 1]-style labels, and sentences that could identify someone by context are flagged for you to keep or remove.'],
+  ['Which survey formats are supported?', 'CSV, Excel (.xlsx) and SPSS (.sav) files, including Qualtrics, REDCap, SurveyMonkey and Microsoft Forms exports. PrivacyScript measures whether any respondent can be singled out (k-anonymity) and can widen groups automatically, for example exact ages to age bands.'],
+  ['Which languages does it support?', 'Name detection works in English, Dutch, German, Spanish, French, Italian and Portuguese. Transcript rules for context and family names cover English, Dutch, German and Spanish.'],
+  ['Is it compliant with GDPR and HIPAA?', 'PrivacyScript supports GDPR pseudonymisation (Article 4(5)) and anonymisation (Recital 26), HIPAA Safe Harbor, UK GDPR and the European Health Data Space. It produces an audit log for every run. Automated checks can miss context, so review the output before sharing and follow your ethics approval.'],
+  ['Is PrivacyScript free?', 'Yes. It is free to use in any modern browser, with no account and no tracking.'],
+];
+
+const FAQ_LD = {
+  '@context': 'https://schema.org',
+  '@type': 'FAQPage',
+  mainEntity: FAQ.map(([q, a]) => ({ '@type': 'Question', name: q, acceptedAnswer: { '@type': 'Answer', text: a } })),
+};
 
 const h2 = 'text-2xl font-bold mt-12';
 const card = 'surface rounded-2xl p-6 mt-4';
@@ -46,6 +68,7 @@ export default function GuidePage() {
             ['#batch', 'Many files at once'],
             ['#key', 'Reversing pseudonymised data'],
             ['#tips', 'Before you share'],
+            ['#faq', 'Frequently asked questions'],
           ].map(([href, label]) => (
             <li key={href}><a className="underline hover:text-white" href={href}>{label}</a></li>
           ))}
@@ -136,6 +159,17 @@ export default function GuidePage() {
         <li>Keep the audit log with your records. It shows what was changed and contains no personal data.</li>
         <li>Text in scripts PrivacyScript cannot read (for example Tamil or Sinhala) cannot be checked. It will tell you.</li>
       </ul>
+
+      <h2 id="faq" className={h2}>Frequently asked questions</h2>
+      <div className="mt-2">
+        {FAQ.map(([q, a]) => (
+          <details key={q} className={card}>
+            <summary className="cursor-pointer font-semibold">{q}</summary>
+            <p className={`${muted} text-sm mt-3 leading-relaxed`}>{a}</p>
+          </details>
+        ))}
+      </div>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(FAQ_LD) }} />
 
       <div className="mt-12">
         <Link href="/" className="btn-primary">Start now</Link>

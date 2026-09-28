@@ -1,0 +1,32 @@
+# PrivacyScript by TekDruid
+
+> Free, browser-based de-identification of health data. Anonymise or pseudonymise patient records, interview transcripts and survey data before sharing them or using AI tools. Files are processed on the user's device and never uploaded.
+
+PrivacyScript: https://tekdruid.com/privacyscript/
+User guide and FAQ: https://tekdruid.com/privacyscript/guide/
+
+## What it does
+- Finds names, places, organisations, dates, phone numbers, emails, ID numbers (NHS, SSN, BSN, IBAN and more) and replaces or removes them.
+- Anonymise (irreversible) or pseudonymise (reversible with a passphrase-encrypted key file).
+- Measures re-identification risk (k-anonymity), blocks anonymised output that is too identifiable, and writes an audit log for every run.
+
+## Inputs
+- Patient records: plain text, Word, typed and scanned PDF, FHIR R4, HL7 v2, DICOM.
+- Interview transcripts: TXT, Word, VTT, SRT, Zoom and Microsoft Teams exports. Speakers become "Interviewer"/"Participant n"; context that identifies someone ("the only nurse on the ward") is flagged for review.
+- Survey data: CSV, Excel, SPSS (.sav); Qualtrics, REDCap, SurveyMonkey and Microsoft Forms exports.
+- Batch mode for many interviews with consistent labels across files.
+
+## Languages
+Name detection: English, Dutch, German, Spanish, French, Italian, Portuguese. Transcript context rules: English, Dutch, German, Spanish.
+
+## Privacy and compliance
+- Runs entirely in the browser; no server processing, no accounts, no analytics.
+- Supports GDPR Article 4(5) pseudonymisation and Recital 26 anonymisation, HIPAA Safe Harbor, UK GDPR, the European Health Data Space (EHDS).
+- Automated detection can miss context; users are guided to review output before sharing.
+
+## Pages
+- [Home](https://tekdruid.com/privacyscript/): check or clean up a document
+- [Check](https://tekdruid.com/privacyscript/check/): is a document safe to share or upload to AI?
+- [Batch](https://tekdruid.com/privacyscript/batch/): de-identify many transcripts at once
+- [Open a key file](https://tekdruid.com/privacyscript/key/): reverse pseudonymised output
+- [User guide and FAQ](https://tekdruid.com/privacyscript/guide/)
