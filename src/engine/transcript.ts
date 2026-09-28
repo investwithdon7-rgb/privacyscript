@@ -26,7 +26,7 @@ import type { IdentifierLabel } from '@/lib/identifiers';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-export type TranscriptKind = 'VTT' | 'SRT' | 'TIMESTAMPED' | 'LABELLED';
+export type TranscriptKind = 'VTT' | 'SRT' | 'CHAT' | 'TIMESTAMPED' | 'LABELLED';
 
 export type SpeakerRole = 'INTERVIEWER' | 'PARTICIPANT';
 
@@ -85,6 +85,17 @@ const TIMESTAMPED_LABEL_RE = new RegExp(
   String.raw`^[ \t]*([^\n\d:][^\n:]{0,39}?)[ \t]+(?:[\[(])?${TS}(?:[\])])?[ \t]*$`,
   'gm'
 );
+/**
+ * Zoom / Teams meeting chat: "10:02:33 From Helen Carter to Everyone:" or
+ * "10:02:33	 From  Helen Carter : message". The recipient of a direct
+ * message is a person too, so it is captured as a label.
+ */
+const CHAT_LINE_RE = new RegExp(
+  String.raw`^[ \t]*${TS}[ \t]+From[ \t]+(.+?)(?:[ \t]+to[ \t]+(.+?))?[ \t]*:`,
+  'gm'
+);
+const CHAT_NON_PERSON_RE = /^(?:everyone|me|all panelists|all participants|waiting room)$/i;
+
 /** WebVTT voice tag: <v Helen Carter> or <v.loud Helen>. */
 const VOICE_TAG_RE = /<v(?:\.[^\s>]+)*\s+([^>]{1,60})>/g;
 /** "Helen: …", "[00:01:02] P01: …", "INT: …" at line start. */
@@ -147,6 +158,22 @@ export function analyseTranscript(text: string): TranscriptInfo | null {
     labelSpans.push({ start: start + offset, end: start + offset + raw.trim().length, speaker: label });
   };
 
+  let chatCount = 0;
+  const chatLines: Array<{ start: number; end: number }> = [];
+  CHAT_LINE_RE.lastIndex = 0;
+  while ((m = CHAT_LINE_RE.exec(text))) {
+    chatCount++;
+    chatLines.push({ start: m.index, end: m.index + m[0].length });
+    const line = m[0];
+    const strip = (v: string) => v.replace(/\s*\((?:privately|direct message|privately to [^)]*)\)\s*$/i, '');
+    const sender = strip(m[1]);
+    addLabel(m.index + line.indexOf(m[1]), sender);
+    if (m[2]) {
+      const to = strip(m[2]);
+      if (!CHAT_NON_PERSON_RE.test(to.trim())) addLabel(m.index + line.lastIndexOf(m[2]), to);
+    }
+  }
+
   VOICE_TAG_RE.lastIndex = 0;
   while ((m = VOICE_TAG_RE.exec(text))) addLabel(m.index + m[0].indexOf(m[1]), m[1]);
 
@@ -161,6 +188,7 @@ export function analyseTranscript(text: string): TranscriptInfo | null {
   while ((m = LINE_LABEL_RE.exec(text))) {
     const start = m.index + m[0].lastIndexOf(m[1], m[0].length - 1);
     if (labelSpans.some((l) => l.start <= start && start < l.end)) continue;
+    if (chatLines.some((c) => c.start <= start && start < c.end)) continue;
     addLabel(start, m[1]);
   }
 
@@ -180,7 +208,10 @@ export function analyseTranscript(text: string): TranscriptInfo | null {
   const repeated = Array.from(counts.values()).filter((c) => c >= 2).length;
   if (!kind) {
     if (labelSpans.length < 4 || counts.size < 2 || repeated < 2) return null;
-    kind = timestampedCount >= labelSpans.length / 2 ? 'TIMESTAMPED' : 'LABELLED';
+    kind =
+      chatCount >= labelSpans.length / 2
+        ? 'CHAT'
+        : timestampedCount >= labelSpans.length / 2 ? 'TIMESTAMPED' : 'LABELLED';
   }
   if (labelSpans.length > 0 && counts.size >= 1) {
     // Drop labels seen once in a long transcript — usually a "Note:" line.
@@ -234,6 +265,7 @@ export function analyseTranscript(text: string): TranscriptInfo | null {
     VTT: 'WebVTT captions (Zoom, Teams, YouTube)',
     SRT: 'SRT subtitles',
     TIMESTAMPED: 'Timestamped transcript (Teams, Otter)',
+    CHAT: 'Meeting chat log (Zoom, Teams)',
     LABELLED: 'Speaker-labelled transcript',
   }[kind];
 

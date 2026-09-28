@@ -205,3 +205,34 @@ describe('name mentions', () => {
     expect(info.structuralSpans.some((s) => s.start === 0 && VTT.slice(s.start, s.end) === 'WEBVTT')).toBe(true);
   });
 });
+
+describe('meeting chat logs', () => {
+  const CHAT = `10:02:33 From Sarah Okafor to Everyone:
+\tWelcome everyone, please say hello.
+10:02:51 From Helen Carter to Everyone:
+\tHi, I'm joining from the ward.
+10:03:10 From Mo Rahman to Sarah Okafor(Direct Message):
+\tCan I leave early?
+10:03:40\t From  Helen Carter : sorry, my camera is off
+`;
+
+  it('reads senders and direct-message recipients, not "Everyone"', () => {
+    const info = analyseTranscript(CHAT)!;
+    expect(info.kind).toBe('CHAT');
+    expect(info.speakers.map((s) => s.label).sort()).toEqual(['Helen Carter', 'Mo Rahman', 'Sarah Okafor']);
+    expect(info.labelSpans.some((l) => l.speaker === 'Everyone')).toBe(false);
+  });
+
+  it('replaces every sender and recipient', async () => {
+    const info = analyseTranscript(CHAT)!;
+    const det = detect(CHAT, speakerSpans(CHAT, info));
+    const out = await replaceSpans(CHAT, dropStructural(det.spans, info), [], {
+      mode: 'ANONYMISE',
+      quasiToRedact: new Set(),
+      labeller: transcriptLabeller(info, true, []),
+    });
+    expect(out.text).not.toMatch(/Okafor|Carter|Rahman/);
+    expect(out.text).toContain('to Everyone:');
+    expect(out.text).toContain('10:02:33 From [');
+  });
+});
