@@ -78,12 +78,9 @@ export async function readFileAsText(file: File): Promise<string> {
         `please keep text files under ${MAX_TEXT_FILE_BYTES / 1_048_576} MB.`
     );
   }
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result ?? ''));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsText(file);
-  });
+  // Blob.text() decodes UTF-8 exactly like FileReader.readAsText, and also
+  // works outside the browser (tests, workers).
+  return file.text();
 }
 
 /** Detect format from filename only — used for binary inputs before we read. */

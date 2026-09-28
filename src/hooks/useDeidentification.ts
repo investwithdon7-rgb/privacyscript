@@ -29,12 +29,8 @@ import { getSession, updateSession } from '@/state/session';
 import {
   analyseTranscript,
   contextualFlags,
-  dropStructural,
-  nameMentionSpans,
+  detectTranscript,
   passageSpan,
-  relationshipNames,
-  speakerSpans,
-  spokenIdentifierSpans,
   transcriptLabeller,
   type TranscriptState,
 } from '@/engine/transcript';
@@ -276,41 +272,16 @@ export async function ingestAndDetect(file: File): Promise<void> {
     // Interview / focus-group transcripts (plain text, captions, Word).
     const transcriptInfo =
       effectiveFormat === 'TEXT' || effectiveFormat === 'DOCX' ? analyseTranscript(text) : null;
-    if (transcriptInfo) {
-      forcedSpans = [...forcedSpans, ...speakerSpans(text, transcriptInfo), ...spokenIdentifierSpans(text)];
-    }
 
     // Stage 2: DETECT
     // Forced spans (structural PII from FHIR paths / HL7 fields / CSV headers)
     // carry confidence 1, so they always land in the auto-accepted bucket.
     const nerSpans = await runClinicalNER(text);
-    let detection = detect(text, [...nerSpans, ...forcedSpans]);
+    const detection = transcriptInfo
+      ? detectTranscript(text, transcriptInfo, nerSpans, forcedSpans)
+      : detect(text, [...nerSpans, ...forcedSpans]);
     let transcript: TranscriptState | null = null;
     if (transcriptInfo) {
-      // Timestamps and cue IDs are structure, not identifiers.
-      let spans = dropStructural(detection.spans, transcriptInfo);
-      const quasiSpans = dropStructural(detection.quasiSpans, transcriptInfo);
-      // A name found once ("my daughter Amira", or confidently by the model)
-      // is replaced at every mention, whatever its case.
-      const knownNames = [
-        ...relationshipNames(text),
-        ...spans
-          .filter((sp) => sp.label === 'NAME' && (sp.source === 'rule' || (sp.confidence ?? 1) >= 0.9))
-          .map((sp) => text.slice(sp.captureStart ?? sp.start, sp.captureEnd ?? sp.end)),
-      ];
-      spans = [
-        ...spans,
-        ...nameMentionSpans(text, knownNames, transcriptInfo, [...spans, ...quasiSpans]),
-      ].sort((a, b) => a.start - b.start);
-      const counts: Record<string, number> = {};
-      for (const sp of [...spans, ...quasiSpans]) counts[sp.label] = (counts[sp.label] ?? 0) + 1;
-      detection = {
-        ...detection,
-        spans,
-        quasiSpans,
-        counts,
-        uncertainSpans: dropStructural(detection.uncertainSpans ?? [], transcriptInfo),
-      };
       transcript = {
         info: transcriptInfo,
         readable: true,

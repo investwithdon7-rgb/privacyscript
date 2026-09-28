@@ -221,6 +221,18 @@ Each row is a person, so risk is measured across rows, not per record.
 - **Context**: sentences that identify without a name are flagged; the user must
   keep or remove each before continuing. Free text is never auto-declared anonymous.
 
+### Batch processing (studies) — `src/engine/batch.ts`
+
+- Scan all files → one review screen (study-wide speaker labels, every flagged
+  passage decided) → release. A shared label registry keeps "[Person 3]" the
+  same person in every file.
+- Each output is validated as released (DOCX: re-extracted from the rebuilt
+  file). Files failing the leak check, or anonymised with k < threshold, are
+  held back and excluded from the ZIP.
+- The re-identification key is one passphrase-encrypted file, downloaded
+  separately — never inside the ZIP.
+- Surveys, PDFs and DICOM are skipped with a reason (they need their own review).
+
 ### Scanned PDF optimisation strategy
 
 Tesseract.js is the bottleneck. To make it usable, the v1 pipeline uses these techniques:

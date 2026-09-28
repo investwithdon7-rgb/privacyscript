@@ -21,7 +21,7 @@
  * existing pipeline (replace, validate, DOCX in-place rebuild) is reused.
  */
 
-import type { Span } from '@/engine/detect';
+import { detect, type DetectionResult, type Span } from '@/engine/detect';
 import type { IdentifierLabel } from '@/lib/identifiers';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -489,7 +489,9 @@ const READABLE_LABELS: Partial<Record<IdentifierLabel, string>> = {
 export function transcriptLabeller(
   info: TranscriptInfo,
   readable: boolean,
-  removedPassages: string[]
+  removedPassages: string[],
+  /** Share across files so "[Person 3]" means the same person study-wide. */
+  registry: LabelRegistry = createLabelRegistry()
 ): (label: IdentifierLabel, original: string) => string | null {
   const speakerOf = new Map<string, string>();
   for (const s of info.speakers) {
@@ -497,8 +499,7 @@ export function transcriptLabeller(
     for (const part of nameParts(s.label)) speakerOf.set(norm(part), `[${s.display}]`);
   }
   const removed = new Set(removedPassages.map(norm));
-  const counters = new Map<string, number>();
-  const assigned: Array<{ label: IdentifierLabel; key: string; words: Set<string>; out: string }> = [];
+  const { counters, assigned } = registry;
 
   return (label, original) => {
     const key = norm(original);
@@ -532,6 +533,85 @@ export function transcriptLabeller(
     const out = `[${noun} ${n}]`;
     assigned.push({ label, key, words, out });
     return out;
+  };
+}
+
+/** Numbering state for readable labels; one per file, or one per study. */
+export interface LabelRegistry {
+  counters: Map<string, number>;
+  assigned: Array<{ label: IdentifierLabel; key: string; words: Set<string>; out: string }>;
+}
+
+export function createLabelRegistry(): LabelRegistry {
+  return { counters: new Map(), assigned: [] };
+}
+
+/**
+ * Give named speakers study-wide labels across several transcripts: the same
+ * name is the same "[Participant n]" in every file, participants are numbered
+ * in order of first appearance, and interviewers are numbered only when the
+ * study has more than one. Mutates each speaker's `display`.
+ */
+export function assignStudySpeakers(infos: TranscriptInfo[]): void {
+  const roleOf = new Map<string, SpeakerRole>();
+  const order: string[] = [];
+  for (const info of infos) {
+    for (const s of info.speakers) {
+      if (!s.isName) continue;
+      const key = norm(s.label);
+      if (!roleOf.has(key)) {
+        roleOf.set(key, s.role);
+        order.push(key);
+      }
+    }
+  }
+  const interviewers = order.filter((k) => roleOf.get(k) === 'INTERVIEWER');
+  const participants = order.filter((k) => roleOf.get(k) === 'PARTICIPANT');
+  const display = new Map<string, string>();
+  interviewers.forEach((k, i) => display.set(k, interviewers.length > 1 ? `Interviewer ${i + 1}` : 'Interviewer'));
+  participants.forEach((k, i) => display.set(k, `Participant ${i + 1}`));
+  for (const info of infos) {
+    for (const s of info.speakers) {
+      if (!s.isName) continue;
+      const key = norm(s.label);
+      s.role = roleOf.get(key)!;
+      s.display = display.get(key)!;
+    }
+  }
+}
+
+/**
+ * Transcript-aware detection: speaker names and spoken identifiers are forced
+ * in, timestamps are kept out, and every name found once is replaced at each
+ * later mention in any case.
+ */
+export function detectTranscript(
+  text: string,
+  info: TranscriptInfo,
+  nerSpans: Span[],
+  extraForced: Span[] = []
+): DetectionResult {
+  const forced = [...extraForced, ...speakerSpans(text, info), ...spokenIdentifierSpans(text)];
+  const detection = detect(text, [...nerSpans, ...forced]);
+  let spans = dropStructural(detection.spans, info);
+  const quasiSpans = dropStructural(detection.quasiSpans, info);
+  const knownNames = [
+    ...relationshipNames(text),
+    ...spans
+      .filter((sp) => sp.label === 'NAME' && (sp.source === 'rule' || (sp.confidence ?? 1) >= 0.9))
+      .map((sp) => text.slice(sp.captureStart ?? sp.start, sp.captureEnd ?? sp.end)),
+  ];
+  spans = [...spans, ...nameMentionSpans(text, knownNames, info, [...spans, ...quasiSpans])].sort(
+    (a, b) => a.start - b.start
+  );
+  const counts: Record<string, number> = {};
+  for (const sp of [...spans, ...quasiSpans]) counts[sp.label] = (counts[sp.label] ?? 0) + 1;
+  return {
+    ...detection,
+    spans,
+    quasiSpans,
+    counts,
+    uncertainSpans: dropStructural(detection.uncertainSpans ?? [], info),
   };
 }
 
