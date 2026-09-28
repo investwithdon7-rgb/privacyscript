@@ -41,15 +41,76 @@ export const NER_STATUS_INITIAL: NERStatus = {
   error: null,
 };
 
-type NerPipeline = (text: string, options?: unknown) => Promise<NerOutput[]>;
+interface NerTokenizer {
+  (text: string, options?: unknown): { input_ids: { data: ArrayLike<number | bigint> } };
+  model: { convert_ids_to_tokens(ids: number[]): string[] };
+}
+
+type NerPipeline = ((text: string, options?: unknown) => Promise<NerOutput[]>) & {
+  tokenizer?: NerTokenizer;
+};
 
 interface NerOutput {
   entity: string;
   entity_group?: string;
   word: string;
-  start: number;
-  end: number;
+  /**
+   * Token position in the model input ([CLS] = 0). transformers.js v2
+   * always reports start/end as null, so offsets are rebuilt from this.
+   */
+  index?: number;
+  start: number | null;
+  end: number | null;
   score: number;
+}
+
+/**
+ * Character offsets for each WordPiece token of `text`, by walking the text
+ * with a cursor. Special tokens map to null. Needed because transformers.js
+ * v2 returns `start: null, end: null` for every entity; the engine used to
+ * treat null as 0, which pinned every detected name onto the first word of
+ * the chunk ("Another", "But") and left the real names unredacted.
+ */
+export function wordPieceOffsets(tokens: string[], text: string): Array<[number, number] | null> {
+  let cursor = 0;
+  return tokens.map((t) => {
+    if (t === '[CLS]' || t === '[SEP]' || t === '[PAD]') return null;
+    if (t === '[UNK]') {
+      while (cursor < text.length && /\s/.test(text[cursor])) cursor++;
+      if (cursor >= text.length) return null;
+      const s = cursor;
+      while (cursor < text.length && !/\s/.test(text[cursor])) cursor++;
+      return [s, cursor];
+    }
+    const piece = t.startsWith('##') ? t.slice(2) : t;
+    const idx = text.indexOf(piece, cursor);
+    if (idx < 0) return null;
+    // Normally only whitespace separates a token from the cursor. A few
+    // stray characters mean an earlier token didn't line up (a symbol the
+    // tokenizer rewrote); step over them so one miss can't derail every
+    // token after it. A distant match is a different occurrence: skip it.
+    if (text.slice(cursor, idx).replace(/\s+/g, '').length > 6) return null;
+    cursor = idx + piece.length;
+    return [idx, cursor];
+  });
+}
+
+/** An entity whose character offsets are known. */
+export type PositionedNer = NerOutput & { start: number; end: number };
+
+/** Fill in start/end from token indices when the pipeline did not. */
+export function withOffsets(raw: NerOutput[], offsets: Array<[number, number] | null>): NerOutput[] {
+  const out: NerOutput[] = [];
+  for (const e of raw) {
+    if (typeof e.start === 'number' && typeof e.end === 'number') {
+      out.push(e);
+      continue;
+    }
+    const o = e.index !== undefined ? offsets[e.index] : null;
+    // No reliable position: drop it rather than pin it to the wrong word.
+    if (o) out.push({ ...e, start: o[0], end: o[1] });
+  }
+  return out;
 }
 
 let pipelinePromise: Promise<NerPipeline | null> | null = null;
@@ -165,7 +226,7 @@ interface EntityGroup {
  * continuation: an I- tag, or a zero-gap subword, separated from the group by
  * at most one whitespace character. Scores are averaged across the group.
  */
-export function aggregateEntities(raw: NerOutput[], text: string): EntityGroup[] {
+export function aggregateEntities(raw: PositionedNer[], text: string): EntityGroup[] {
   const groups: EntityGroup[] = [];
   let current: (EntityGroup & { sum: number; n: number }) | null = null;
 
@@ -209,7 +270,7 @@ const NER_DOCUMENT_WORDS = new Set([
  * and drop anything under 3 characters — those are stray subword tokens with
  * no identifying value, pure noise in the review UI.
  */
-export function rawNerToSpans(raw: NerOutput[], text: string, offset: number): Span[] {
+export function rawNerToSpans(raw: PositionedNer[], text: string, offset: number): Span[] {
   const spans: Span[] = [];
   for (const g of aggregateEntities(raw, text)) {
     const label = NER_LABEL_MAP[g.type] ?? null;
@@ -259,7 +320,11 @@ export async function runClinicalNER(text: string): Promise<Span[]> {
   const pipe = await ensureNerLoaded();
   if (!pipe) return [];
 
-  const chunks = splitForNer(text, 1600);
+  // The character budget assumes ~4 chars per token, which fails badly for
+  // timestamp- or number-heavy text (a caption timing line is ~20 tokens).
+  // Anything past 512 tokens is silently truncated by the model, so split
+  // each chunk further until it really fits.
+  const chunks = splitForNer(text, 1600).flatMap((c) => fitToModel(pipe, c));
   const all = await Promise.all(chunks.map((c) => nerOneChunk(pipe, c.text, c.offset)));
 
   // Dedupe by (start, end, label) — overlapping chunks could otherwise emit
@@ -287,8 +352,18 @@ async function nerOneChunk(
 ): Promise<Span[]> {
   if (text.trim().length === 0) return [];
   try {
-    const raw = (await pipe(text)) as NerOutput[];
-    return rawNerToSpans(raw, text, offset);
+    let raw = (await pipe(text)) as NerOutput[];
+    if (raw.some((e) => typeof e.start !== 'number') && pipe.tokenizer) {
+      // Tokenise exactly as the pipeline does, then align tokens to text.
+      const { input_ids } = pipe.tokenizer(text, { truncation: true });
+      const ids = Array.from(input_ids.data, (v) => Number(v));
+      const tokens = pipe.tokenizer.model.convert_ids_to_tokens(ids);
+      raw = withOffsets(raw, wordPieceOffsets(tokens, text));
+    }
+    const positioned = raw.filter(
+      (e): e is PositionedNer => typeof e.start === 'number' && typeof e.end === 'number'
+    );
+    return rawNerToSpans(positioned, text, offset);
   } catch (err) {
     setStatus({ error: (err as Error).message });
     return [];
@@ -299,6 +374,31 @@ interface NerChunk {
   text: string;
   /** Offset of this chunk's first character in the original full text. */
   offset: number;
+}
+
+/** Model window (512) minus [CLS]/[SEP] and a small margin. */
+const MAX_MODEL_TOKENS = 500;
+
+/**
+ * Split a chunk (at whitespace, near the middle) until each piece fits the
+ * model's token window. Uses the pipeline's own tokenizer to count.
+ */
+export function fitToModel(
+  pipe: { tokenizer?: NerTokenizer },
+  chunk: NerChunk,
+  depth = 0
+): NerChunk[] {
+  if (!pipe.tokenizer || depth > 8) return [chunk];
+  const count = pipe.tokenizer(chunk.text, { truncation: false }).input_ids.data.length;
+  if (count <= MAX_MODEL_TOKENS) return [chunk];
+  const mid = Math.floor(chunk.text.length / 2);
+  let cut = chunk.text.lastIndexOf('\n', mid);
+  if (cut < chunk.text.length / 4) cut = chunk.text.lastIndexOf(' ', mid);
+  if (cut <= 0) cut = mid;
+  return [
+    ...fitToModel(pipe, { text: chunk.text.slice(0, cut), offset: chunk.offset }, depth + 1),
+    ...fitToModel(pipe, { text: chunk.text.slice(cut), offset: chunk.offset + cut }, depth + 1),
+  ];
 }
 
 /**
