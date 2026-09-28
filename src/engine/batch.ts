@@ -24,6 +24,7 @@ import { validate, type ValidationResult } from '@/engine/validate';
 import { buildAuditLog, type AuditLog } from '@/engine/output';
 import { detectFormat, readFileAsText, type RecordFormat } from '@/engine/ingest';
 import type { SessionSecret } from '@/engine/crypto';
+import type { NerRunOptions } from '@/engine/ner';
 import {
   analyseTranscript,
   contextualFlags,
@@ -37,7 +38,7 @@ import {
 import { COMPLIANCE_PROFILES, type ComplianceProfileId, type Mode } from '@/lib/constants';
 import { assessScriptCoverage, type ScriptWarning } from '@/engine/script-coverage';
 
-export type NerRunner = (text: string) => Promise<Span[]>;
+export type NerRunner = (text: string, opts?: NerRunOptions) => Promise<Span[]>;
 
 export interface PreparedFile {
   id: string;
@@ -110,8 +111,10 @@ export async function prepareFile(file: File, id: string, ner: NerRunner): Promi
     };
   }
 
-  const nerSpans = await ner(text);
   const info = format === 'TEXT' || format === 'DOCX' ? analyseTranscript(text) : null;
+  const nerSpans = await ner(text, {
+    skip: info ? [...info.structuralSpans, ...info.labelSpans] : [],
+  });
   if (info) {
     return {
       ...base,
@@ -163,7 +166,12 @@ export async function finaliseFile(p: PreparedFile, opts: FinaliseOptions): Prom
   const removed = p.transcript
     ? p.transcript.flags.filter((f) => opts.decisions[f.id] === 'remove')
     : [];
-  const spans = [...detection.spans, ...removed.map((f) => passageSpan(p.text, f))];
+  // Batch has no per-name review screen, so the model's possible names are
+  // redacted by default: over-redacting is the safe direction.
+  const possibleNames = (detection.uncertainSpans ?? []).filter(
+    (sp) => sp.label === 'NAME' || sp.label === 'ADDRESS_LINE'
+  );
+  const spans = [...detection.spans, ...possibleNames, ...removed.map((f) => passageSpan(p.text, f))];
 
   const replacement = await replaceSpans(p.text, spans, detection.quasiSpans, {
     mode: opts.mode,
@@ -196,7 +204,6 @@ export async function finaliseFile(p: PreparedFile, opts: FinaliseOptions): Prom
   const validation = await validate(outputText, {
     mode: opts.mode,
     originalIdentifiers: Object.keys(replacement.mapping),
-    nerRunner: opts.ner,
   });
 
   const retainedQuasi = detection.quasiSpans.filter((q) => !quasiToRedact.has(q.label));

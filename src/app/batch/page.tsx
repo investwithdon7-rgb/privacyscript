@@ -56,7 +56,7 @@ const heading = 'mono text-xs uppercase tracking-widest text-[color:var(--color-
 
 export default function BatchPage() {
   const router = useRouter();
-  const { state, analyse, decide, decideAll, setReadable, release, downloadZip, downloadKey, reset } =
+  const { state, analyse, cancel, decide, decideAll, setReadable, release, downloadZip, downloadKey, reset } =
     useBatchDeidentification();
   const [profileId, setProfileId] = useState<ComplianceProfileId>(DEFAULT_COMPLIANCE_PROFILE);
   const [showProfiles, setShowProfiles] = useState(false);
@@ -250,6 +250,11 @@ export default function BatchPage() {
                   <div className="flex items-center gap-2">
                     <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
                     <span className="text-sm text-[color:var(--color-muted)]">Working on this device…</span>
+                    {state.phase === 'analysing' && (
+                      <button type="button" className="btn-secondary text-sm ml-2" onClick={cancel}>
+                        Cancel
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

@@ -9,6 +9,8 @@ import { UncertainDetectionsPanel } from '@/components/UncertainDetectionsPanel'
 import { SpanEditor } from '@/components/SpanEditor';
 import { SurveyColumnsPanel } from '@/components/SurveyColumnsPanel';
 import { TranscriptPanel } from '@/components/TranscriptPanel';
+import { NerProgress } from '@/components/NerProgress';
+import { cancelNer } from '@/engine/ner';
 import type { TranscriptState } from '@/engine/transcript';
 import { useSession } from '@/hooks/useSession';
 import { getSession, resetSession, updateSession } from '@/state/session';
@@ -387,8 +389,18 @@ export default function ProcessPage() {
             )}
           </>
         ) : (
-          <div className="mt-8 text-[color:var(--color-muted)]">Running detection…</div>
+          <NerProgress
+            progress={s.nerProgress}
+            onCancel={() => {
+              cancelNer();
+              resetSession();
+              router.push('/');
+            }}
+          />
         )}
+
+        {/* The leak check re-reads the output in the background. */}
+        {s.detection && s.nerProgress?.phase === 'validate' && <NerProgress progress={s.nerProgress} />}
       </section>
     </main>
   );

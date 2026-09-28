@@ -132,46 +132,60 @@ function setStatus(patch: Partial<NERStatus>) {
 }
 
 /**
- * Lazily load the NER pipeline. Returns null on environments where Transformers
- * cannot run (SSR / Node tests). The function memoises so repeated calls share
- * the same load.
+ * Multilingual PER / ORG / LOC model (English, German, Dutch, Spanish,
+ * French, Italian, Portuguese, Arabic, Chinese, Latvian). A distilled BERT:
+ * 6 layers instead of 12, so roughly twice as fast as bert-base-NER, which
+ * was English-only and mis-tagged ordinary Spanish words as names.
+ */
+export const NER_MODEL_ID = 'Xenova/distilbert-base-multilingual-cased-ner-hrl';
+
+/**
+ * Load the token-classification pipeline. Shared by the background worker
+ * and the in-page fallback; works in either context (no window access).
+ */
+export async function loadNerPipeline(
+  onProgress?: (pct: number, message: string) => void
+): Promise<NerPipeline> {
+  const tx = await import('@xenova/transformers');
+
+  // Point ORT at our statically-served WASM binaries (copied to public/wasm/
+  // by scripts/copy-ort-wasm.js). Without this, ORT defaults to looking
+  // next to the webpack chunk URL (/_next/static/chunks/…wasm) which 404s.
+  tx.env.backends.onnx.wasm.wasmPaths = `${BASE_PATH}/wasm/`;
+
+  // Single-threaded WASM: multi-threading needs cross-origin isolation
+  // headers, which would also block the model download. Speed comes from
+  // the background worker, the smaller model and masking non-speech text.
+  tx.env.backends.onnx.wasm.numThreads = 1;
+
+  // Allow remote model fetch; cache in IndexedDB.
+  tx.env.allowLocalModels = false;
+  tx.env.useBrowserCache = true;
+  const pipeline = await tx.pipeline('token-classification', NER_MODEL_ID, {
+    quantized: true,
+    progress_callback: (p: { progress?: number; status?: string }) => {
+      if (typeof p.progress === 'number') {
+        onProgress?.(Math.min(100, Math.round(p.progress)), p.status ?? 'Loading model…');
+      }
+    },
+  });
+  return pipeline as unknown as NerPipeline;
+}
+
+/**
+ * In-page fallback: lazily load the pipeline on the main thread. Used only
+ * when a background worker cannot be created. Returns null where
+ * Transformers cannot run (SSR / Node tests). Memoised.
  */
 export function ensureNerLoaded(): Promise<NerPipeline | null> {
   if (typeof window === 'undefined') return Promise.resolve(null);
   if (pipelinePromise) return pipelinePromise;
 
   pipelinePromise = (async () => {
-    setStatus({ message: 'Downloading NER model (~50MB)…', loadProgress: 0 });
+    setStatus({ message: 'Downloading name-detection model (~135 MB, once)…', loadProgress: 0 });
     try {
-      const tx = await import('@xenova/transformers');
-
-      // Point ORT at our statically-served WASM binaries (copied to public/wasm/
-      // by scripts/copy-ort-wasm.js). Without this, ORT defaults to looking
-      // next to the webpack chunk URL (/_next/static/chunks/…wasm) which 404s.
-      tx.env.backends.onnx.wasm.wasmPaths = `${BASE_PATH}/wasm/`;
-
-      // Disable threading — the threaded worker JS files are not bundled and
-      // require an additional copy step. Single-threaded WASM is fast enough
-      // for the text volumes PrivacyScript processes.
-      tx.env.backends.onnx.wasm.numThreads = 1;
-
-      // Allow remote model fetch; cache in IndexedDB.
-      tx.env.allowLocalModels = false;
-      tx.env.useBrowserCache = true;
-      const pipeline = await tx.pipeline(
-        'token-classification',
-        'Xenova/bert-base-NER',
-        {
-          quantized: true,
-          progress_callback: (p: { progress?: number; status?: string }) => {
-            if (typeof p.progress === 'number') {
-              setStatus({
-                loadProgress: Math.min(100, Math.round(p.progress)),
-                message: p.status ?? 'Loading model…',
-              });
-            }
-          },
-        }
+      const pipeline = await loadNerPipeline((pct, message) =>
+        setStatus({ loadProgress: pct, message })
       );
       setStatus({
         loaded: true,
@@ -179,7 +193,7 @@ export function ensureNerLoaded(): Promise<NerPipeline | null> {
         message: 'NER model ready.',
         error: null,
       });
-      return pipeline as unknown as NerPipeline;
+      return pipeline;
     } catch (err) {
       const msg = (err as Error).message;
       setStatus({
@@ -204,6 +218,10 @@ const NER_LABEL_MAP: Record<string, IdentifierLabel | null> = {
   LOC: 'ADDRESS_LINE',
   ORG: 'INSTITUTION',
   MISC: null,
+  // The multilingual model also tags dates, including vague ones ("last
+  // summer"). Exact dates are caught by the rule engine; redacting every
+  // time phrase would strip context researchers need.
+  DATE: null,
 };
 
 interface EntityGroup {
@@ -298,51 +316,154 @@ export function rawNerToSpans(raw: PositionedNer[], text: string, offset: number
   return spans;
 }
 
-/**
- * Run NER on the given text. Returns spans aligned to the regex engine's Span
- * shape. Performs aggregation of B-/I- subword tokens into entities.
- *
- * Chunking
- * --------
- * BERT models have a 512-token attention window. On English clinical text the
- * empirical token-to-char ratio is ~0.25 (4 chars / token), so we cap each
- * chunk at 1600 characters and break on paragraph → sentence → word
- * boundaries (in that priority order) to keep entities intact.
- *
- * Previously the pipeline was called with the FULL text in one shot — for any
- * document longer than ~2 KB the transformer silently truncated, so the back
- * half of long discharge summaries never saw NER. Chunking restores full
- * coverage at no extra wall-clock cost (the chunks run in parallel; the WASM
- * backend is single-threaded but the micro-task overhead of awaiting each
- * pipeline call disappears under Promise.all).
- */
-export async function runClinicalNER(text: string): Promise<Span[]> {
-  const pipe = await ensureNerLoaded();
-  if (!pipe) return [];
+export interface NerRunOptions {
+  /**
+   * Ranges the model need not read (caption timings, cue IDs, speaker
+   * labels already handled by rules). They are blanked with spaces, which
+   * keeps every offset intact and removes their tokens from the workload.
+   */
+  skip?: Array<{ start: number; end: number }>;
+  /** Called after each chunk: done of total. */
+  onProgress?: (done: number, total: number) => void;
+}
 
+export class NerCancelledError extends Error {
+  constructor() {
+    super('Name detection was cancelled.');
+    this.name = 'NerCancelledError';
+  }
+}
+
+/** Blank the given ranges with spaces (newlines kept), preserving offsets. */
+export function maskRanges(text: string, ranges: Array<{ start: number; end: number }>): string {
+  if (ranges.length === 0) return text;
+  const chars = text.split('');
+  for (const { start, end } of ranges) {
+    for (let i = Math.max(0, start); i < Math.min(chars.length, end); i++) {
+      if (chars[i] !== '\n') chars[i] = ' ';
+    }
+  }
+  return chars.join('');
+}
+
+/**
+ * Run the model over `text`, chunk by chunk. Shared core of the worker and
+ * the in-page fallback. Chunks run one after another so progress is real and
+ * cancellation takes effect between chunks.
+ */
+export async function nerOnText(
+  pipe: NerPipeline,
+  text: string,
+  opts: { onProgress?: (done: number, total: number) => void; isCancelled?: () => boolean } = {}
+): Promise<Span[]> {
   // The character budget assumes ~4 chars per token, which fails badly for
   // timestamp- or number-heavy text (a caption timing line is ~20 tokens).
   // Anything past 512 tokens is silently truncated by the model, so split
   // each chunk further until it really fits.
-  const chunks = splitForNer(text, 1600).flatMap((c) => fitToModel(pipe, c));
-  const all = await Promise.all(chunks.map((c) => nerOneChunk(pipe, c.text, c.offset)));
+  // Generous character budget: masked (blank) text costs no tokens, and
+  // fitToModel below splits anything that exceeds the real token window.
+  const chunks = splitForNer(text, 4000)
+    .flatMap((c) => fitToModel(pipe, c))
+    .filter((c) => c.text.trim().length > 0);
 
-  // Dedupe by (start, end, label) — overlapping chunks could otherwise emit
-  // the same entity twice. Boundaries are clean but a long sentence that
-  // happens to mention the same name twice across two chunks gives identical
-  // global spans which the merge step will already handle, but we filter
-  // here too so the output is tidier for the diff viewer.
+  // Dedupe by (start, end, label): the same entity can surface twice at a
+  // chunk boundary.
   const seen = new Set<string>();
   const out: Span[] = [];
-  for (const arr of all) {
-    for (const s of arr) {
-      const key = `${s.start} ${s.end} ${s.label}`;
+  for (let i = 0; i < chunks.length; i++) {
+    if (opts.isCancelled?.()) throw new NerCancelledError();
+    for (const s of await nerOneChunk(pipe, chunks[i].text, chunks[i].offset)) {
+      const key = `${s.start}|${s.end}|${s.label}`;
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(s);
     }
+    opts.onProgress?.(i + 1, chunks.length);
   }
   return out;
+}
+
+// ─── Background worker client ────────────────────────────────────────────
+//
+// The model runs in a Web Worker so long documents never freeze the page.
+// If a worker cannot be created, the same code runs in-page instead.
+
+type WorkerMessage =
+  | { type: 'status'; patch: Partial<NERStatus> }
+  | { type: 'progress'; id: number; done: number; total: number }
+  | { type: 'result'; id: number; spans: Span[] }
+  | { type: 'cancelled'; id: number }
+  | { type: 'error'; id: number; message: string };
+
+let nerWorker: Worker | null | undefined;
+let nextRequestId = 0;
+const pendingRuns = new Map<
+  number,
+  { resolve: (s: Span[]) => void; reject: (e: Error) => void; onProgress?: (d: number, t: number) => void }
+>();
+
+function failAllPending(err: Error): void {
+  for (const p of Array.from(pendingRuns.values())) p.reject(err);
+  pendingRuns.clear();
+}
+
+function getNerWorker(): Worker | null {
+  if (nerWorker !== undefined) return nerWorker;
+  try {
+    nerWorker = new Worker(new URL('../workers/ner.worker.ts', import.meta.url));
+    nerWorker.onmessage = (e: MessageEvent<WorkerMessage>) => {
+      const m = e.data;
+      if (m.type === 'status') {
+        setStatus(m.patch);
+        return;
+      }
+      const p = pendingRuns.get(m.id);
+      if (!p) return;
+      if (m.type === 'progress') p.onProgress?.(m.done, m.total);
+      else {
+        pendingRuns.delete(m.id);
+        if (m.type === 'result') p.resolve(m.spans);
+        else if (m.type === 'cancelled') p.reject(new NerCancelledError());
+        else p.reject(new Error(m.message));
+      }
+    };
+    nerWorker.onerror = () => {
+      // The worker itself failed (e.g. blocked script). Use in-page next time.
+      nerWorker?.terminate();
+      nerWorker = null;
+      failAllPending(new Error('Background name detection stopped. Please try again.'));
+    };
+  } catch {
+    nerWorker = null;
+  }
+  return nerWorker;
+}
+
+/**
+ * Detect names, places and organisations. Runs in a background worker, so
+ * the page stays responsive; reports progress; can be cancelled with
+ * cancelNer(). Returns [] where the model cannot run (SSR / Node tests).
+ */
+export async function runClinicalNER(text: string, opts: NerRunOptions = {}): Promise<Span[]> {
+  if (typeof window === 'undefined') return [];
+  const input = opts.skip?.length ? maskRanges(text, opts.skip) : text;
+  const worker = getNerWorker();
+  if (!worker) {
+    const pipe = await ensureNerLoaded();
+    if (!pipe) return [];
+    return nerOnText(pipe, input, { onProgress: opts.onProgress });
+  }
+  return new Promise<Span[]>((resolve, reject) => {
+    const id = ++nextRequestId;
+    pendingRuns.set(id, { resolve, reject, onProgress: opts.onProgress });
+    worker.postMessage({ type: 'run', id, text: input });
+  });
+}
+
+/** Stop any running detection. Pending calls reject with NerCancelledError. */
+export function cancelNer(): void {
+  if (!nerWorker) return;
+  for (const id of Array.from(pendingRuns.keys())) nerWorker.postMessage({ type: 'cancel', id });
 }
 
 async function nerOneChunk(
@@ -365,6 +486,8 @@ async function nerOneChunk(
     );
     return rawNerToSpans(positioned, text, offset);
   } catch (err) {
+    // In the worker, setStatus only updates the worker's own copy; the error
+    // is surfaced to the page through the returned (empty) result instead.
     setStatus({ error: (err as Error).message });
     return [];
   }

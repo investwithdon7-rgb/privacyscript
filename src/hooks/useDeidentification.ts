@@ -1,7 +1,7 @@
 'use client';
 
 import { detect, type Span } from '@/engine/detect';
-import { runClinicalNER } from '@/engine/ner';
+import { NerCancelledError, runClinicalNER } from '@/engine/ner';
 import { replaceSpans, type ReplacementResult } from '@/engine/replace';
 import { assessRisk, type RiskAssessment } from '@/engine/risk';
 import { validate } from '@/engine/validate';
@@ -287,7 +287,13 @@ export async function ingestAndDetect(file: File): Promise<void> {
     // Stage 2: DETECT
     // Forced spans (structural PII from FHIR paths / HL7 fields / CSV headers)
     // carry confidence 1, so they always land in the auto-accepted bucket.
-    const nerSpans = await runClinicalNER(text);
+    // The model reads only what people wrote or said: caption timings, cue
+    // IDs and speaker labels are masked (speakers are handled by rules).
+    const nerSpans = await runClinicalNER(text, {
+      skip: transcriptInfo ? [...transcriptInfo.structuralSpans, ...transcriptInfo.labelSpans] : [],
+      onProgress: (done, total) => updateSession({ nerProgress: { phase: 'detect', done, total } }),
+    });
+    updateSession({ nerProgress: null });
     const detection = transcriptInfo
       ? detectTranscript(text, transcriptInfo, nerSpans, forcedSpans)
       : detect(text, [...nerSpans, ...forcedSpans]);
@@ -333,7 +339,9 @@ export async function ingestAndDetect(file: File): Promise<void> {
       stageIndex: 2,
     });
   } catch (err) {
-    updateSession({ error: (err as Error).message });
+    // A cancelled run is not an error; the page that cancelled resets itself.
+    if (err instanceof NerCancelledError) return;
+    updateSession({ error: (err as Error).message, nerProgress: null });
   }
 }
 
@@ -703,11 +711,16 @@ export async function finalise(): Promise<void> {
         ...tabularOut.directOriginals,
       ];
     }
+    // No second model pass over the output: it is the same model on almost
+    // the same text, so it repeats the first pass's answers and doubled the
+    // time for long transcripts. The warning it produced is derived directly
+    // instead: possible names from the first pass that the user chose to keep
+    // and that still appear in the output.
     const validation = await validate(validationText, {
       mode: s.mode,
       originalIdentifiers: Array.from(new Set(originalIdentifiers)),
-      nerRunner: runClinicalNER,
     });
+    validation.nerLeaks = keptPossibleNames(s, validationText);
     updateSession({ validation, stageIndex: 5 });
 
     // Stage 6: OUTPUT
@@ -754,6 +767,26 @@ export async function finalise(): Promise<void> {
   } catch (err) {
     updateSession({ error: (err as Error).message });
   }
+}
+
+/**
+ * Possible names (uncertain model detections) the user did not redact and
+ * that still appear in the output. Surfaced as warnings, never a block.
+ */
+function keptPossibleNames(s: ReturnType<typeof getSession>, output: string) {
+  const uncertain = s.detection?.uncertainSpans ?? [];
+  const kept = uncertain.filter(
+    (sp) =>
+      (sp.label === 'NAME' || sp.label === 'ADDRESS_LINE') &&
+      s.uncertainSpanDecisions[`${sp.start}:${sp.end}:${sp.label}`] !== true
+  );
+  const seen = new Set<string>();
+  return kept.filter((sp) => {
+    const word = sp.text.trim();
+    if (word.length < 3 || seen.has(word)) return false;
+    seen.add(word);
+    return new RegExp(`(?<![\\p{L}\\d])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\d])`, 'u').test(output);
+  });
 }
 
 /**

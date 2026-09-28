@@ -285,9 +285,24 @@ duration, frequency, therapeutic procedure, diagnostic procedure, and more.
 
 Exported to ONNX for Transformers.js. Quantised to INT8 to keep bundle under ~120MB.
 
-**Generic entity fallback**: `Xenova/bert-base-NER` for PER / LOC / ORG entities the
-clinical model may miss. Run both, union the results, deduplicate overlapping spans
-(longest match wins, clinical model takes priority on ties).
+**Generic entity model (what actually runs today)**:
+`Xenova/distilbert-base-multilingual-cased-ner-hrl` (~135 MB, quantised) for PER / LOC /
+ORG in English, Dutch, German, Spanish, French, Italian, Portuguese and more. It replaced
+the English-only `Xenova/bert-base-NER`, which mis-tagged ordinary Spanish words as names.
+Its DATE label is ignored (exact dates come from rules). The clinical model above is
+still not converted/hosted.
+
+**Runs in a Web Worker** (`src/workers/ner.worker.ts`): the page never freezes, progress is
+reported per chunk and runs can be cancelled. Implementation notes that matter:
+- transformers.js v2 returns entity `start`/`end` as null; offsets are rebuilt from token
+  indices (`wordPieceOffsets`). Never trust the library's offsets.
+- Chunks are sized by real token count (`fitToModel`, ≤ 500 tokens): caption timing
+  lines are ~20 tokens each and silently overflowed the 512-token window.
+- Transcripts mask timings, cue IDs and speaker labels before the model reads them.
+- No second model pass during validation (same model, same answers); kept "possible
+  names" still in the output are reported instead.
+- Transcripts add a language-independent safety net: mid-sentence capitalised words
+  never used in lower case are offered once each as possible names.
 
 **Model loading strategy**:
 - Lazy-load on first use. Show download progress (this will be the first-load bottleneck).

@@ -75,6 +75,8 @@ export interface SessionState {
   transcript: TranscriptState | null;
   /** Set when part or all of the text is in a script the engine cannot read. */
   scriptWarning: ScriptWarning | null;
+  /** Live progress of the background name detection (null when idle). */
+  nerProgress: { phase: 'detect' | 'validate'; done: number; total: number } | null;
   /** User confirmed they will review the unreadable passages themselves (PARTIAL only). */
   scriptAcknowledged: boolean;
   /** Progress within the 6 pipeline stages, 0–6. */
@@ -114,6 +116,7 @@ const INITIAL: SessionState = {
   transcript: null,
   scriptWarning: null,
   scriptAcknowledged: false,
+  nerProgress: null,
   stageIndex: 0,
   quasiConfirmed: false,
   error: null,

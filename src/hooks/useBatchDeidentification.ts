@@ -20,7 +20,7 @@
  */
 
 import { useCallback, useRef, useState } from 'react';
-import { runClinicalNER } from '@/engine/ner';
+import { cancelNer, NerCancelledError, runClinicalNER } from '@/engine/ner';
 import { generateSessionSecret, encryptKeyFile, type SessionSecret } from '@/engine/crypto';
 import { downloadBlob, downloadJSON } from '@/engine/output';
 import { finaliseFile, prepareFile, type FinalisedFile, type PreparedFile } from '@/engine/batch';
@@ -79,6 +79,7 @@ export function useBatchDeidentification() {
   const [state, setState] = useState<BatchState>(INITIAL);
   // The secret lives only in memory for this batch; never serialised in clear.
   const secretRef = useRef<SessionSecret | null>(null);
+  const cancelledRef = useRef(false);
 
   const patchItem = (id: string, patch: Partial<BatchItem>) =>
     setState((s) => ({ ...s, items: s.items.map((it) => (it.id === id ? { ...it, ...patch } : it)) }));
@@ -90,12 +91,25 @@ export function useBatchDeidentification() {
     secretRef.current = null;
     setState({ ...INITIAL, phase: 'analysing', mode, profileId, items });
 
+    cancelledRef.current = false;
     const prepared: PreparedFile[] = [];
     for (let i = 0; i < files.length; i++) {
+      // Cancelled: stop scanning and go back to the start. Nothing was produced.
+      if (cancelledRef.current) {
+        setState(INITIAL);
+        return;
+      }
       const id = String(i);
       patchItem(id, { status: 'processing' });
       try {
-        const p = await prepareFile(files[i], id, runClinicalNER);
+        const p = await prepareFile(files[i], id, (text, opts) =>
+          runClinicalNER(text, {
+            ...opts,
+            onProgress: (done, total) =>
+              patchItem(id, { message: `Finding names… part ${done} of ${total}` }),
+          })
+        );
+        patchItem(id, { message: undefined });
         prepared.push(p);
         patchItem(
           id,
@@ -111,6 +125,10 @@ export function useBatchDeidentification() {
               }
         );
       } catch (err) {
+        if (err instanceof NerCancelledError) {
+          setState(INITIAL);
+          return;
+        }
         patchItem(id, { status: 'error', message: (err as Error).message });
       }
     }
@@ -160,7 +178,6 @@ export function useBatchDeidentification() {
           readable: s.readable,
           decisions: s.decisions[p.id] ?? {},
           registry,
-          ner: runClinicalNER,
         });
         finalised.push(f);
         patchItem(p.id, {
@@ -224,10 +241,16 @@ export function useBatchDeidentification() {
     [state]
   );
 
+  /** Stop scanning: the running file is abandoned and nothing is produced. */
+  const cancel = useCallback(() => {
+    cancelledRef.current = true;
+    cancelNer();
+  }, []);
+
   const reset = useCallback(() => {
     secretRef.current = null;
     setState(INITIAL);
   }, []);
 
-  return { state, analyse, decide, decideAll, setReadable, release, downloadZip, downloadKey, reset };
+  return { state, analyse, cancel, decide, decideAll, setReadable, release, downloadZip, downloadKey, reset };
 }
