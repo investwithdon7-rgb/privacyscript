@@ -35,6 +35,7 @@ import {
   type TranscriptInfo,
 } from '@/engine/transcript';
 import { COMPLIANCE_PROFILES, type ComplianceProfileId, type Mode } from '@/lib/constants';
+import { assessScriptCoverage, type ScriptWarning } from '@/engine/script-coverage';
 
 export type NerRunner = (text: string) => Promise<Span[]>;
 
@@ -50,6 +51,8 @@ export interface PreparedFile {
   transcript?: { info: TranscriptInfo; flags: ContextFlag[] };
   /** Original bytes for DOCX in-place rebuild. */
   docxBytes?: ArrayBuffer;
+  /** Part of the text is in a script the engine cannot read (PARTIAL). */
+  scriptWarning?: ScriptWarning;
 }
 
 export interface FinalisedFile {
@@ -96,6 +99,17 @@ export async function prepareFile(file: File, id: string, ner: NerRunner): Promi
     text = await readFileAsText(file);
   }
 
+  // Latin-script detectors find nothing in other scripts; that must never
+  // look like a clean file.
+  const scriptWarning = assessScriptCoverage(text) ?? undefined;
+  if (scriptWarning?.severity === 'UNREADABLE') {
+    const scripts = scriptWarning.scripts.join(', ') || 'a script';
+    return {
+      ...base,
+      skipReason: `Mostly written in ${scripts}, which PrivacyScript cannot read, so it cannot be checked. De-identify it by hand.`,
+    };
+  }
+
   const nerSpans = await ner(text);
   const info = format === 'TEXT' || format === 'DOCX' ? analyseTranscript(text) : null;
   if (info) {
@@ -103,11 +117,12 @@ export async function prepareFile(file: File, id: string, ner: NerRunner): Promi
       ...base,
       text,
       docxBytes,
+      scriptWarning,
       detection: detectTranscript(text, info, nerSpans),
       transcript: { info, flags: contextualFlags(text, info) },
     };
   }
-  return { ...base, text, docxBytes, detection: detect(text, nerSpans) };
+  return { ...base, text, docxBytes, scriptWarning, detection: detect(text, nerSpans) };
 }
 
 export interface FinaliseOptions {
@@ -193,7 +208,9 @@ export async function finaliseFile(p: PreparedFile, opts: FinaliseOptions): Prom
   });
 
   let heldBack: string | undefined;
-  if (!validation.passed) {
+  if (p.scriptWarning) {
+    heldBack = `Part of this file is in ${p.scriptWarning.scripts.join(', ') || 'a script'} that cannot be checked automatically. Open it on its own to review those passages.`;
+  } else if (!validation.passed) {
     heldBack = `Original identifiers still appear in the output (${validation.originalsLeaked.length}). Open this file on its own to fix it.`;
   } else if (opts.mode === 'ANONYMISE' && risk.kAnonymity < profile.kThreshold) {
     heldBack = `Too identifiable to count as anonymous (k = ${risk.kAnonymity}, needs ${profile.kThreshold}).`;

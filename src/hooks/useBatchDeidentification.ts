@@ -103,6 +103,9 @@ export function useBatchDeidentification() {
             ? { status: 'skipped', message: p.skipReason }
             : {
                 status: 'ready',
+                message: p.scriptWarning
+                  ? `Part is in ${p.scriptWarning.scripts.join(', ') || 'a script'} that cannot be checked. It will be held back; open it on its own.`
+                  : undefined,
                 spansFound: (p.detection?.spans.length ?? 0) + (p.detection?.quasiSpans.length ?? 0),
                 flags: p.transcript?.flags.length ?? 0,
               }

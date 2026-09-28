@@ -11,7 +11,7 @@ import { SurveyColumnsPanel } from '@/components/SurveyColumnsPanel';
 import { TranscriptPanel } from '@/components/TranscriptPanel';
 import type { TranscriptState } from '@/engine/transcript';
 import { useSession } from '@/hooks/useSession';
-import { getSession, updateSession } from '@/state/session';
+import { getSession, resetSession, updateSession } from '@/state/session';
 import { finalise, spansInEngineColumns, tabularDataRows } from '@/hooks/useDeidentification';
 import { COMPLIANCE_PROFILES, K_ANONYMITY_THRESHOLD } from '@/lib/constants';
 import type { CsvIngest } from '@/formats/csv';
@@ -106,7 +106,13 @@ export default function ProcessPage() {
   const transcriptPending = !!transcript && !transcript.confirmed;
   const setTranscript = (next: TranscriptState) => updateSession({ transcript: next });
   /** Column / transcript setup still open — later review steps wait for it. */
-  const setupPending = columnsPending || transcriptPending;
+  // ── Unreadable script ─────────────────────────────────────────────────
+  // UNREADABLE: nothing can be produced. PARTIAL: the user must acknowledge
+  // that those passages are theirs to check before any step continues.
+  const scriptWarning = s.scriptWarning;
+  const scriptUnreadable = scriptWarning?.severity === 'UNREADABLE';
+  const scriptBlocked = scriptUnreadable || (scriptWarning?.severity === 'PARTIAL' && !s.scriptAcknowledged);
+  const setupPending = scriptBlocked || columnsPending || transcriptPending;
 
   // In a survey, detections inside identifier / quasi columns are handled by
   // the column plan — only show the ones in written/answer columns.
@@ -202,8 +208,60 @@ export default function ProcessPage() {
               </div>
             </div>
 
+            {/* Unreadable script comes before everything else */}
+            {scriptWarning && (
+              <div
+                className="rounded-2xl p-6 mt-8"
+                style={{
+                  background: scriptUnreadable ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.08)',
+                  border: `1px solid ${scriptUnreadable ? 'var(--color-danger)' : 'var(--color-warning)'}`,
+                }}
+              >
+                <h2 className="text-lg font-semibold">
+                  {scriptUnreadable ? 'This document cannot be checked' : 'Part of this document cannot be checked'}
+                </h2>
+                <p className="text-sm mt-2">{scriptWarning.message}</p>
+                {scriptUnreadable ? (
+                  <>
+                    <p className="text-sm text-[color:var(--color-muted)] mt-2">
+                      PrivacyScript reads Latin-script text only. It will not produce a de-identified
+                      version: the result would look clean without being checked. De-identify this
+                      document by hand, or with a tool that supports{' '}
+                      {scriptWarning.scripts.join(', ') || 'this script'}.
+                    </p>
+                    <div className="mt-4">
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => {
+                          resetSession();
+                          router.push('/');
+                        }}
+                      >
+                        Start again
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <label className="flex items-start gap-3 mt-4 cursor-pointer text-sm">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4 mt-0.5 accent-[#4F46E5]"
+                      checked={s.scriptAcknowledged}
+                      onChange={(e) => updateSession({ scriptAcknowledged: e.target.checked })}
+                    />
+                    <span>
+                      I understand the {scriptWarning.scripts.join(', ') || 'non-Latin'} passages are not checked
+                      automatically. I will mark any names or other identifiers in them myself in the
+                      next steps, or confirm they contain none. This is recorded in the audit log.
+                    </span>
+                  </label>
+                )}
+              </div>
+            )}
+
             {/* Transcripts: speakers + contextual passages come first */}
-            {transcript && s.mode && (
+            {!scriptBlocked && transcript && s.mode && (
               transcriptPending ? (
                 <TranscriptPanel
                   transcript={transcript}
@@ -238,7 +296,7 @@ export default function ProcessPage() {
             )}
 
             {/* Survey datasets: column plan comes first */}
-            {tabular && s.mode && (
+            {!scriptBlocked && tabular && s.mode && (
               columnsPending ? (
                 <SurveyColumnsPanel
                   tabular={tabular}

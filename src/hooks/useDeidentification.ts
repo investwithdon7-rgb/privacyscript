@@ -26,6 +26,7 @@ import {
   type ComplianceJurisdiction,
 } from '@/engine/compliance';
 import { getSession, updateSession } from '@/state/session';
+import { assessScriptCoverage } from '@/engine/script-coverage';
 import {
   analyseTranscript,
   contextualFlags,
@@ -318,9 +319,15 @@ export async function ingestAndDetect(file: File): Promise<void> {
       }
     }
 
+    // The detectors are Latin-script only: text they cannot read yields no
+    // spans and would look clean. Flag it so output is never emitted silently.
+    const scriptWarning = assessScriptCoverage(text);
+
     updateSession({
       detection,
       transcript,
+      scriptWarning,
+      scriptAcknowledged: false,
       quasiToRedact: autoRedact,
       stageIndex: 2,
     });
@@ -348,6 +355,8 @@ export async function runComplianceCheck(
     scanProgress: null,
     tabular: null,
     transcript: null,
+    scriptWarning: null,
+    scriptAcknowledged: false,
     quasiConfirmed: false,
     quasiToRedact: new Set(),
     uncertainSpanDecisions: {},
@@ -538,6 +547,12 @@ export async function finalise(): Promise<void> {
   const s = getSession();
   if (!s.detection || s.originalText === null || !s.mode) return;
 
+  if (s.scriptWarning?.severity === 'UNREADABLE') {
+    updateSession({ error: s.scriptWarning.message });
+    return;
+  }
+  if (s.scriptWarning?.severity === 'PARTIAL' && !s.scriptAcknowledged) return;
+
   try {
     updateSession({ error: null, stageIndex: 2 });
 
@@ -686,6 +701,11 @@ export async function finalise(): Promise<void> {
       : await reconstructOutput(s.format!, replacement);
     const tabularNotes = tab && tabularOut ? tabularAuditNotes(tab, tabularOut) : [];
     if (tr) tabularNotes.push(...transcriptAuditNotes(tr));
+    if (s.scriptWarning) {
+      tabularNotes.push(
+        `Unreadable script (${s.scriptWarning.scripts.join(', ') || 'non-Latin'}): ${Math.round(s.scriptWarning.unreadableRatio * 100)}% of letters could not be checked automatically. The user confirmed they reviewed those passages manually.`
+      );
+    }
     const outputSize = bytesOutput?.byteLength ?? textOutput?.length ?? 0;
     const audit = buildAuditLog({
       mode: s.mode,
@@ -920,6 +940,8 @@ export async function rerenderDocxOutput(): Promise<void> {
 export function canEmitOutput(): boolean {
   const s = getSession();
   if (!s.risk || !s.validation) return false;
+  if (s.scriptWarning?.severity === 'UNREADABLE') return false;
+  if (s.scriptWarning?.severity === 'PARTIAL' && !s.scriptAcknowledged) return false;
   if (!s.validation.passed) return false;
   if (s.risk.kAnonymity < K_ANONYMITY_THRESHOLD && s.mode === 'ANONYMISE') return false;
   return true;

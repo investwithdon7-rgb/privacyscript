@@ -18,6 +18,7 @@ import type { DocxOutputFormat } from '@/formats/docx';
 import type { ScanProgress } from '@/formats/pdf-scanned';
 import type { TabularState } from '@/engine/tabular';
 import type { TranscriptState } from '@/engine/transcript';
+import type { ScriptWarning } from '@/engine/script-coverage';
 import type {
   ComplianceJurisdiction,
   ComplianceReport,
@@ -72,6 +73,10 @@ export interface SessionState {
   tabular: TabularState | null;
   /** Interview / focus-group transcript structure and review (text + DOCX). */
   transcript: TranscriptState | null;
+  /** Set when part or all of the text is in a script the engine cannot read. */
+  scriptWarning: ScriptWarning | null;
+  /** User confirmed they will review the unreadable passages themselves (PARTIAL only). */
+  scriptAcknowledged: boolean;
   /** Progress within the 6 pipeline stages, 0–6. */
   stageIndex: number;
   /** True once user has confirmed quasi-identifier handling on screen 2. */
@@ -107,6 +112,8 @@ const INITIAL: SessionState = {
   scanProgress: null,
   tabular: null,
   transcript: null,
+  scriptWarning: null,
+  scriptAcknowledged: false,
   stageIndex: 0,
   quasiConfirmed: false,
   error: null,

@@ -86,3 +86,26 @@ describe('batch finalisation', () => {
     }
   });
 });
+
+describe('unreadable scripts', () => {
+  const TAMIL = 'கமலா செல்வராஜ் சென்னையில் உள்ள மருத்துவமனையில் செவிலியராக வேலை செய்கிறார்';
+
+  it('skips a file mostly in a script the engine cannot read', async () => {
+    const text = `Interviewer: ${TAMIL}\nP01: ${TAMIL}\nInterviewer: ${TAMIL}\nP01: ${TAMIL}\n`;
+    const p = await prepareFile(file('tamil.txt', text), 't', noNer);
+    expect(p.skipReason).toMatch(/Tamil.*cannot read/);
+    expect(p.detection).toBeUndefined();
+  });
+
+  it('holds back a file with an unreadable passage, even when nothing else is found', async () => {
+    const english = 'Interviewer: How has your recovery been going since you went home from the ward? '.repeat(6);
+    const text = `${english}\nP01: It has been slow. ${TAMIL}\nInterviewer: Thanks.\nP01: Thanks.\n`;
+    const p = await prepareFile(file('mixed.txt', text), 'm', noNer);
+    expect(p.skipReason).toBeUndefined();
+    expect(p.scriptWarning?.severity).toBe('PARTIAL');
+    const out = await finaliseFile(p, {
+      mode: 'ANONYMISE', profileId: 'GDPR_ANON', readable: true, decisions: {}, registry: createLabelRegistry(),
+    });
+    expect(out.heldBack).toMatch(/Tamil.*cannot be checked/);
+  });
+});
