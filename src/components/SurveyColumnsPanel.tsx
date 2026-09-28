@@ -22,7 +22,8 @@ interface SurveyColumnsPanelProps {
   dataRows: Record<string, string>[];
   mode: Mode;
   kThreshold: number;
-  isXlsx: boolean;
+  /** Set when the upload was converted to CSV for processing. */
+  convertedFrom?: 'XLSX' | 'SPSS';
   onChange: (next: TabularState) => void;
   onConfirm: () => void;
 }
@@ -70,7 +71,7 @@ export function SurveyColumnsPanel({
   dataRows,
   mode,
   kThreshold,
-  isXlsx,
+  convertedFrom,
   onChange,
   onConfirm,
 }: SurveyColumnsPanelProps) {
@@ -137,7 +138,9 @@ export function SurveyColumnsPanel({
         {tabular.platform.id !== 'GENERIC' && directCount > 0
           ? ` We recognised this ${tabular.platform.label.replace(' export', '')} export and marked ${directCount} column${directCount === 1 ? '' : 's'} that identify people, including platform data such as IP addresses and locations.`
           : ''}
-        {isXlsx ? ' The first worksheet is used, and the result downloads as a CSV file.' : ''}
+        {convertedFrom === 'XLSX' && ' The first worksheet is used, and the result downloads as a CSV file.'}
+        {convertedFrom === 'SPSS' &&
+          ' SPSS variable labels are used to understand each question. The result downloads as a CSV file with the original codes (value labels are not included).'}
       </p>
 
       {/* Live re-identification risk */}

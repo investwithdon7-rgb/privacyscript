@@ -189,6 +189,7 @@ Every record goes through these stages in order. Each stage is independently log
 | HL7 FHIR XML | xml2js + FHIR logic | v2 | |
 | CSV (records + survey exports) | Papa Parse | Column plan + span engine, see Survey datasets | v1 |
 | XLSX (survey exports) | jszip (first worksheet) | Output as CSV | v1 |
+| SPSS .sav | Custom reader (uncompressed + bytecode; not .zsav) | Output as CSV, codes kept; variable labels guide column roles | v1 |
 
 ### Survey datasets (CSV / XLSX) — `src/engine/tabular.ts`
 
@@ -209,7 +210,8 @@ Each row is a person, so risk is measured across rows, not per record.
 
 ### Interview transcripts (TXT / DOCX / VTT / SRT) — `src/engine/transcript.ts`
 
-- **Structure**: WebVTT voice tags, SRT, Teams/Otter "Name   0:03" headers, "Name:" lines.
+- **Structure**: WebVTT voice tags, SRT, Teams/Otter "Name   0:03" headers, "Name:" lines,
+  Zoom/Teams chat logs ("10:02:33 From X to Y:"; direct-message recipients are names too).
   Timestamps, cue IDs and the WEBVTT header are excluded from detection; .vtt/.srt
   download in their own format.
 - **Speakers**: real-name labels → "[Interviewer]" / "[Participant n]" (editable) at

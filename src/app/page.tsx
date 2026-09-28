@@ -157,7 +157,7 @@ export default function LandingPage() {
             Step 2. Upload or paste a record
           </h2>
           <DropZone
-            accept=".txt,.vtt,.srt,.json,.hl7,.pdf,.docx,.csv,.tsv,.xlsx,.dcm,.dicom"
+            accept=".txt,.vtt,.srt,.json,.hl7,.pdf,.docx,.csv,.tsv,.xlsx,.sav,.dcm,.dicom"
             disabled={false}
             onFile={onFile}
           />

@@ -39,7 +39,7 @@ export function detectFormat(filename: string, content: string): RecordFormat {
   }
   if (ext === 'pdf') return 'PDF_TYPED'; // PDF subtype resolved later in the PDF pipeline
   if (ext === 'docx') return 'DOCX';
-  if (ext === 'csv' || ext === 'tsv' || ext === 'xlsx') return 'CSV';
+  if (ext === 'csv' || ext === 'tsv' || ext === 'xlsx' || ext === 'sav') return 'CSV';
   if (ext === 'txt' || ext === 'md') return 'TEXT';
 
   // Sniff content

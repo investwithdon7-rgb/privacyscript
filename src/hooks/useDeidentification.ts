@@ -191,14 +191,23 @@ export async function ingestAndDetect(file: File): Promise<void> {
         break;
       }
       case 'CSV': {
-        const isXlsx = /\.xlsx$/i.test(file.name);
-        const raw = isXlsx
-          ? await (await import('@/formats/xlsx')).xlsxToCsv(await file.arrayBuffer())
-          : await readFileAsText(file);
+        const ext = file.name.split('.').pop()?.toLowerCase();
+        // SPSS variable labels act as question text for column suggestions.
+        let questions: Record<string, string> = {};
+        let raw: string;
+        if (ext === 'xlsx') {
+          raw = await (await import('@/formats/xlsx')).xlsxToCsv(await file.arrayBuffer());
+        } else if (ext === 'sav') {
+          const sav = (await import('@/formats/sav')).readSav(await file.arrayBuffer());
+          raw = sav.csv;
+          questions = sav.labels;
+        } else {
+          raw = await readFileAsText(file);
+        }
         const { parseCsv, forcedLabelForCsvColumn } = await import('@/formats/csv');
         const csv = parseCsv(raw);
         parsedOriginal = csv;
-        updateSession({ tabular: buildTabularState(csv, getSession().mode ?? 'PSEUDONYMISE') });
+        updateSession({ tabular: buildTabularState(csv, getSession().mode ?? 'PSEUDONYMISE', questions) });
         text = csv.leaves.map((l) => l.value).join(LEAF_DELIM);
         forcedSpans = buildForcedSpans(
           csv.leaves.map((l) => l.value),
@@ -400,7 +409,11 @@ export async function startDeidentificationFromCompliance(
   // when pseudonymising), so re-suggest now that the mode is known.
   const tabular =
     s.format === 'CSV' && s.parsedOriginal
-      ? buildTabularState(s.parsedOriginal as CsvIngest, mode)
+      ? buildTabularState(
+          s.parsedOriginal as CsvIngest,
+          mode,
+          Object.fromEntries((s.tabular?.plans ?? []).filter((p) => p.question).map((p) => [p.column, p.question!]))
+        )
       : s.tabular;
 
   updateSession({
@@ -425,12 +438,17 @@ export function tabularDataRows(csv: CsvIngest, tabular: TabularState): Record<s
   return csv.rows.slice(tabular.platform.metaRowCount);
 }
 
-function buildTabularState(csv: CsvIngest, mode: Mode): TabularState {
+function buildTabularState(
+  csv: CsvIngest,
+  mode: Mode,
+  /** Extra question text per column (e.g. SPSS variable labels). */
+  questions: Record<string, string> = {}
+): TabularState {
   const platform = detectPlatform(csv.headers, csv.rows);
   const dataRows = csv.rows.slice(platform.metaRowCount);
   return {
     platform,
-    plans: suggestPlans(csv.headers, dataRows, mode, questionRow(platform, csv.rows)),
+    plans: suggestPlans(csv.headers, dataRows, mode, { ...questionRow(platform, csv.rows), ...questions }),
     suppressedRows: [],
     fixNotes: [],
     confirmed: false,
@@ -497,7 +515,7 @@ function detectInitialFormat(file: File): RecordFormat {
   if (ext === 'pdf') return 'PDF_TYPED';
   if (ext === 'docx') return 'DOCX';
   if (ext === 'hl7') return 'HL7_V2';
-  if (ext === 'csv' || ext === 'tsv' || ext === 'xlsx') return 'CSV';
+  if (ext === 'csv' || ext === 'tsv' || ext === 'xlsx' || ext === 'sav') return 'CSV';
   // JSON and TXT/unknown: return TEXT as a placeholder; confirmFormat will
   // upgrade to FHIR_R4 or HL7_V2 after reading the content preview.
   return 'TEXT';

@@ -245,7 +245,9 @@ export default function ProcessPage() {
                   dataRows={dataRows}
                   mode={s.mode}
                   kThreshold={kThreshold}
-                  isXlsx={/\.xlsx$/i.test(s.filename ?? '')}
+                  convertedFrom={
+                    /\.xlsx$/i.test(s.filename ?? '') ? 'XLSX' : /\.sav$/i.test(s.filename ?? '') ? 'SPSS' : undefined
+                  }
                   onChange={setTabular}
                   onConfirm={() => {
                     // Nothing left to review in the written answers → go
