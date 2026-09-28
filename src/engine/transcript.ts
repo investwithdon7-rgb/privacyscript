@@ -55,25 +55,32 @@ export interface TranscriptInfo {
   language: TranscriptLanguage;
 }
 
-export type TranscriptLanguage = 'en' | 'es' | 'other';
+export type TranscriptLanguage = 'en' | 'es' | 'nl' | 'de' | 'other';
 
-const EN_WORDS = new Set(['the', 'and', 'to', 'of', 'is', 'that', 'it', 'you', 'in', 'for', 'with', 'but', 'so', 'this', 'was', 'have', 'we', 'they', 'what', 'yeah']);
-const ES_WORDS = new Set(['de', 'que', 'la', 'el', 'y', 'en', 'los', 'se', 'no', 'por', 'con', 'para', 'una', 'es', 'lo', 'pero', 'muy', 'más', 'las', 'también']);
+/** Very common, mostly language-distinctive words. */
+const LANGUAGE_WORDS: Record<Exclude<TranscriptLanguage, 'other'>, Set<string>> = {
+  en: new Set(['the', 'and', 'to', 'of', 'is', 'that', 'it', 'you', 'for', 'with', 'but', 'so', 'this', 'was', 'have', 'they', 'what', 'yeah', 'just', 'about']),
+  es: new Set(['que', 'la', 'el', 'y', 'los', 'se', 'por', 'con', 'para', 'una', 'es', 'lo', 'pero', 'muy', 'más', 'las', 'también', 'como', 'porque', 'está']),
+  nl: new Set(['het', 'een', 'ik', 'niet', 'van', 'zijn', 'wat', 'maar', 'ook', 'je', 'heb', 'hebben', 'nog', 'wel', 'dus', 'naar', 'omdat', 'gewoon', 'heel', 'mijn']),
+  de: new Set(['und', 'ich', 'nicht', 'das', 'ist', 'ein', 'eine', 'der', 'sie', 'mit', 'auch', 'auf', 'für', 'wir', 'aber', 'noch', 'sehr', 'habe', 'wenn', 'dass']),
+};
 
 /** Rough main-language guess from very common words (no network, no model). */
 export function detectLanguage(text: string): TranscriptLanguage {
-  let en = 0;
-  let es = 0;
+  const counts = { en: 0, es: 0, nl: 0, de: 0 };
   let total = 0;
-  for (const w of text.toLowerCase().match(/[a-záéíóúñü]+/g) ?? []) {
+  for (const w of text.toLowerCase().match(/[a-záéíóúñüäößëïèàç]+/g) ?? []) {
     total++;
-    if (EN_WORDS.has(w)) en++;
-    if (ES_WORDS.has(w)) es++;
+    for (const lang of Object.keys(counts) as Array<keyof typeof counts>) {
+      if (LANGUAGE_WORDS[lang].has(w)) counts[lang]++;
+    }
   }
   if (total < 20) return 'en';
-  if (es > en * 1.5 && es / total > 0.08) return 'es';
-  if (en / total > 0.06) return 'en';
-  return es / total > 0.06 ? 'es' : 'other';
+  const ranked = (Object.entries(counts) as Array<[keyof typeof counts, number]>).sort((a, b) => b[1] - a[1]);
+  const [best, bestCount] = ranked[0];
+  const second = ranked[1][1];
+  if (bestCount / total < 0.06 || bestCount < second * 1.3) return 'other';
+  return best;
 }
 
 export interface ContextFlag {
@@ -361,7 +368,10 @@ export function hasRealQuestion(turn: string): boolean {
 
 // ─── Speaker spans ──────────────────────────────────────────────────────────
 
-const TITLES = new Set(['dr', 'mr', 'mrs', 'ms', 'miss', 'prof', 'professor', 'sir', 'dame', 'nurse', 'rev']);
+const TITLES = new Set([
+  'dr', 'mr', 'mrs', 'ms', 'miss', 'prof', 'professor', 'sir', 'dame', 'nurse', 'rev',
+  'dhr', 'mevr', 'mw', 'mevrouw', 'meneer', 'herr', 'frau', 'sr', 'sra', 'srta', 'dra', 'señor', 'señora',
+]);
 
 /** The searchable parts of a speaker name: full name + each name part. */
 export function nameParts(label: string): string[] {
@@ -455,11 +465,18 @@ const RELATION_NAME_RE =
 const RELATION_NAME_ES_RE =
   /(?<![\p{L}])[Mm]i\s+(?:hij[oa]|mujer|marido|esposa|esposo|madre|padre|mam[aá]|pap[aá]|herman[oa]|pareja|niet[oa]|amig[oa]|jef[ea]|vecin[oa]|prim[oa]|t[ií][oa]|suegr[oa]|cu[ñn]ad[oa])\s*,?\s+(\p{Lu}\p{Ll}{2,}(?:\s+\p{Lu}\p{Ll}{2,})?)/gu;
 
+const RELATION_NAME_NL_RE =
+  /(?<![\p{L}])[Mm]ijn\s+(?:dochter|zoon|vrouw|man|echtgeno(?:ot|te)|moeder|vader|broer|zus|zuster|partner|vriend(?:in)?|buurman|buurvrouw|baas|collega|kleinzoon|kleindochter|oma|opa|tante|oom|neef|nicht|schoonmoeder|schoonvader)\s*,?\s+(\p{Lu}\p{Ll}{2,}(?:\s+\p{Lu}\p{Ll}{2,})?)/gu;
+// German capitalises every noun, so "meine Tochter Lehrerin" could yield a
+// false name; that over-redacts, which is the safe direction.
+const RELATION_NAME_DE_RE =
+  /(?<![\p{L}])[Mm]ein(?:e|em|er|en)?\s+(?:Tochter|Sohn|Frau|Mann|Ehemann|Ehefrau|Mutter|Vater|Bruder|Schwester|Partner(?:in)?|Freund(?:in)?|Nachbar(?:in)?|Chef(?:in)?|Kollege|Kollegin|Enkel(?:in)?|Oma|Opa|Tante|Onkel|Cousine?|Schwiegermutter|Schwiegervater)\s*,?\s+(\p{Lu}\p{Ll}{2,}(?:\s+\p{Lu}\p{Ll}{2,})?)/gu;
+
 /** Names introduced by a relationship: "my daughter Amira", "mi hija Amira". */
 export function relationshipNames(text: string): string[] {
   const out = new Set<string>();
   let m: RegExpExecArray | null;
-  for (const re of [RELATION_NAME_RE, RELATION_NAME_ES_RE]) {
+  for (const re of [RELATION_NAME_RE, RELATION_NAME_ES_RE, RELATION_NAME_NL_RE, RELATION_NAME_DE_RE]) {
     re.lastIndex = 0;
     while ((m = re.exec(text))) out.add(m[1]);
   }
@@ -498,10 +515,18 @@ export function nameMentionSpans(
 const DIGIT_WORDS: Record<string, number> = {
   zero: 1, oh: 1, o: 1, nought: 1, one: 1, two: 1, three: 1, four: 1, five: 1,
   six: 1, seven: 1, eight: 1, nine: 1,
+  // Spanish, Dutch, German
+  cero: 1, uno: 1, dos: 1, tres: 1, cuatro: 1, cinco: 1, seis: 1, siete: 1, ocho: 1, nueve: 1,
+  nul: 1, een: 1, 'één': 1, twee: 1, drie: 1, vier: 1, vijf: 1, zes: 1, zeven: 1, acht: 1, negen: 1,
+  null: 1, eins: 1, zwei: 1, zwo: 1, drei: 1, 'fünf': 1, sechs: 1, sieben: 1, neun: 1,
 };
-const MULTIPLIERS: Record<string, number> = { double: 2, triple: 3, treble: 3 };
-const SPOKEN_DIGITS_RE =
-  /\b(?:(?:zero|oh|o|nought|one|two|three|four|five|six|seven|eight|nine|double|triple|treble|\d)(?:[ \t,-]+|(?=[.?!;\n])|$)){5,}/gi;
+const MULTIPLIERS: Record<string, number> = { double: 2, triple: 3, treble: 3, dubbel: 2, doppel: 2 };
+const SPOKEN_DIGITS_RE = new RegExp(
+  '(?<![\\p{L}\\d])(?:(?:' +
+    [...Object.keys(DIGIT_WORDS), ...Object.keys(MULTIPLIERS)].sort((a, b) => b.length - a.length).join('|') +
+    '|\\d)(?:[ \\t,-]+|(?=[.?!;\\n])|$)){5,}',
+  'giu'
+);
 
 const ORDINALS =
   'first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|twenty[\\s-](?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth)|thirtieth|thirty[\\s-]first|\\d{1,2}(?:st|nd|rd|th)';
@@ -584,6 +609,20 @@ const CUES_ES: Cue[] = [
   },
 ];
 
+const CUES_NL: Cue[] = [
+  { re: es('de enige|als enige|iedereen kent me|kent iedereen me|kwam in de krant|was op tv|op televisie'), reason: 'Says something unique about a person' },
+  { re: es('ik werk(?:te)? (?:bij|als|in|op|voor)|ik ben (?:verpleegkundige|arts|dokter|leraar|lerares|docent|politieagent|advocaat)'), reason: 'Mentions where someone works' },
+  { re: es('ik woon(?:de)? in|wij wonen in|ik kom uit|geboren in|verhuisd naar'), reason: 'Mentions where someone lives or comes from' },
+  { re: es('mijn (?:vrouw|man|dochter|zoon|moeder|vader|broer|zus|partner|baas)[^.?!]{0,60}(?:werkt|woont|studeert|is een)'), reason: 'Describes a family member or colleague in detail' },
+];
+
+const CUES_DE: Cue[] = [
+  { re: es('der einzige|die einzige|als einzige[r]?|jeder kennt mich|kennt mich jeder|stand in der zeitung|war im fernsehen'), reason: 'Says something unique about a person' },
+  { re: es('ich arbeite(?:te)? (?:bei|als|in|im|an|für)|ich bin (?:krankenschwester|pfleger(?:in)?|arzt|ärztin|lehrer(?:in)?|polizist(?:in)?|anwalt|anwältin)'), reason: 'Mentions where someone works' },
+  { re: es('ich wohne in|wir wohnen in|ich komme aus|geboren in|umgezogen nach'), reason: 'Mentions where someone lives or comes from' },
+  { re: es('mein(?:e)? (?:frau|mann|tochter|sohn|mutter|vater|bruder|schwester|partner(?:in)?|chef(?:in)?)[^.?!]{0,60}(?:arbeitet|wohnt|studiert|ist (?:ein|eine))'), reason: 'Describes a family member or colleague in detail' },
+];
+
 const CUES: Cue[] = [
   {
     re: /\b(?:the only|only one|one of the only|one of (?:very )?few|the first (?:person|woman|man|nurse|doctor)|everyone (?:here |round here |there )?knows (?:me|him|her|us)|you'?d know (?:me|who)|well[\s-]known|famous)\b/i,
@@ -628,7 +667,7 @@ export function contextualFlags(text: string, info: TranscriptInfo | null): Cont
     start += lead;
     end = start + sentence.trim().length;
     if (end - start < 12) continue;
-    const cue = [...CUES, ...CUES_ES].find((c) => c.re.test(text.slice(start, end)));
+    const cue = [...CUES, ...CUES_ES, ...CUES_NL, ...CUES_DE].find((c) => c.re.test(text.slice(start, end)));
     if (cue) flags.push({ id: id++, start, end, text: text.slice(start, end), reason: cue.reason });
   }
   return flags;
@@ -773,6 +812,67 @@ export function assignStudySpeakers(infos: TranscriptInfo[]): void {
   }
 }
 
+/** Capitalised words that are not people: calendar, languages, common tools. */
+const NOT_A_NAME = new Set(
+  (
+    // months / days (EN, ES, NL, DE)
+    'january february march april may june july august september october november december ' +
+    'monday tuesday wednesday thursday friday saturday sunday ' +
+    'enero febrero marzo abril mayo junio julio agosto septiembre octubre noviembre diciembre ' +
+    'lunes martes miércoles jueves viernes sábado domingo ' +
+    'januari februari maart mei juni juli augustus oktober ' +
+    'maandag dinsdag woensdag donderdag vrijdag zaterdag zondag ' +
+    'januar februar märz juni juli oktober dezember montag dienstag mittwoch donnerstag freitag samstag sonntag ' +
+    // languages / nationalities
+    'english spanish dutch german french italian portuguese chinese japanese arabic european british american ' +
+    'español inglés alemán francés nederlands engels duits frans deutsch englisch spanisch ' +
+    // common tools and platforms
+    'zoom teams google microsoft apple windows android iphone ipad whatsapp facebook instagram linkedin youtube ' +
+    'excel powerpoint word outlook onedrive sharepoint chrome safari firefox azure amazon aws ' +
+    'chatgpt openai gemini copilot claude anthropic slack notion clickup jira trello dropbox ' +
+    // interjections that speech-to-text capitalises
+    'okay yeah yes mhm hmm vale bueno sí ja nee nein'
+  ).split(/\s+/)
+);
+
+/**
+ * Safety net for names the model misses (unusual or foreign names,
+ * nicknames): a capitalised word in mid-sentence that is never written in
+ * lower case is almost always a name or a brand. Each distinct word is offered
+ * ONCE for review (as a possible name); confirming it replaces every mention.
+ * Works the same in any language.
+ */
+export function properNounCandidates(
+  text: string,
+  info: TranscriptInfo,
+  covered: Array<{ start: number; end: number; text?: string }>
+): Span[] {
+  const lowercaseWords = new Set(text.match(/(?<![\p{L}])\p{Ll}[\p{L}'’]*/gu) ?? []);
+  const speakerWords = new Set(
+    info.speakers.flatMap((s) => nameParts(s.label)).map((w) => w.toLowerCase())
+  );
+  const coveredWords = new Set(
+    covered.map((c) => (c.text ?? text.slice(c.start, c.end)).trim().toLowerCase())
+  );
+  const blocked = [...covered, ...info.structuralSpans, ...info.labelSpans];
+  const seen = new Set<string>();
+  const out: Span[] = [];
+  // Preceded by a lower-case letter or a comma/semicolon and a space: mid-sentence.
+  const re = /(?<=[\p{Ll},;] )\p{Lu}\p{Ll}{2,}(?![\p{L}\d])/gu;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const word = m[0];
+    const key = word.toLowerCase();
+    if (seen.has(key) || NOT_A_NAME.has(key) || speakerWords.has(key) || coveredWords.has(key)) continue;
+    if (lowercaseWords.has(key)) continue;
+    const span = { start: m.index, end: m.index + word.length };
+    if (overlaps(span, blocked)) continue;
+    seen.add(key);
+    out.push({ ...span, text: word, label: 'NAME', category: 'HIPAA', source: 'rule', confidence: 0.55 });
+  }
+  return out;
+}
+
 /**
  * Transcript-aware detection: speaker names and spoken identifiers are forced
  * in, timestamps are kept out, and every name found once is replaced at each
@@ -808,7 +908,10 @@ export function detectTranscript(
     spans,
     quasiSpans,
     counts,
-    uncertainSpans: dropStructural(detection.uncertainSpans ?? [], info),
+    uncertainSpans: (() => {
+      const uncertain = dropStructural(detection.uncertainSpans ?? [], info);
+      return [...uncertain, ...properNounCandidates(text, info, [...spans, ...quasiSpans, ...uncertain])];
+    })(),
   };
 }
 
@@ -817,7 +920,10 @@ function norm(s: string): string {
 }
 
 function stripTitle(s: string): string {
-  return s.replace(/^(?:dr|mr|mrs|ms|miss|prof|professor|sir|dame|nurse|rev)\.?\s+/i, '');
+  return s.replace(
+    /^(?:dr|mr|mrs|ms|miss|prof|professor|sir|dame|nurse|rev|dhr|mevr|mw|mevrouw|meneer|herr|frau|sr|sra|srta|dra|señor|señora)\.?\s+/i,
+    ''
+  );
 }
 
 function isSubset(a: Set<string>, b: Set<string>): boolean {

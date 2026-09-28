@@ -16,6 +16,8 @@ import {
   relabelSpeakers,
   isSpeakerVariant,
   nameMentionSpans,
+  nameParts,
+  properNounCandidates,
   passageSpan,
   relationshipNames,
   speakerSpans,
@@ -295,5 +297,49 @@ describe('Spanish transcripts', () => {
     const info = analyseTranscript(ES)!;
     const changed = relabelSpeakers(info.speakers.map((s) => (s.label === 'Carmen Ortega' ? { ...s, role: 'INTERVIEWER' as const } : { ...s, role: 'PARTICIPANT' as const })));
     expect(changed.map((s) => s.display)).toEqual(['Interviewer', 'Participant 1']);
+  });
+});
+
+describe('Dutch and German transcripts', () => {
+  const NL = `Interviewer: Hoe gaat het nu met u?\nP01: Het gaat wel. Ik werk bij het ziekenhuis in Utrecht en mijn dochter Anna helpt mij. anna is heel lief. Mijn nummer is nul zes een twee drie vier vijf zes zeven acht.\nInterviewer: Dank u.\nP01: Graag gedaan, ik heb het ook gewoon niet makkelijk.\n`;
+  const DE = `Interviewer: Wie geht es Ihnen?\nP01: Es geht. Ich arbeite bei der Stadt und meine Tochter Lena hilft mir. Ich bin die einzige mit dieser Krankheit im Dorf, das ist nicht einfach.\nInterviewer: Danke.\nP01: Gern, aber ich habe auch sehr viel Zeit.\n`;
+
+  it('detects Dutch, its cues, relationship names and a spoken phone number', () => {
+    const info = analyseTranscript(NL)!;
+    expect(info.language).toBe('nl');
+    expect(contextualFlags(NL, info).map((f) => f.reason)).toContain('Mentions where someone works');
+    expect(relationshipNames(NL)).toEqual(['Anna']);
+    expect(nameMentionSpans(NL, ['Anna'], info, []).map((s) => s.text)).toEqual(['Anna', 'anna']);
+    expect(spokenIdentifierSpans(NL).some((s) => s.label === 'PHONE')).toBe(true);
+  });
+
+  it('detects German, its cues and relationship names', () => {
+    const info = analyseTranscript(DE)!;
+    expect(info.language).toBe('de');
+    const reasons = contextualFlags(DE, info).map((f) => f.reason);
+    expect(reasons).toContain('Mentions where someone works');
+    expect(reasons).toContain('Says something unique about a person');
+    expect(relationshipNames(DE)).toEqual(['Lena']);
+  });
+
+  it('strips Dutch, German and Spanish titles from names', () => {
+    expect(nameParts('Dhr. Jansen')).toEqual(['Dhr. Jansen', 'Jansen']);
+    expect(nameParts('Frau Müller')).toEqual(['Frau Müller', 'Müller']);
+  });
+});
+
+describe('proper-noun safety net', () => {
+  it('offers unusual names the model missed, once each, but not tools or calendar words', () => {
+    const t = `Ana Ruiz: I discussed it with Oriol last week, and Oriol agreed.\nBen Cole: Did Toby use Zoom or PowerPoint in September?\nAna Ruiz: Only Excel, but Toby liked it.\nBen Cole: ok.\n`;
+    const info = analyseTranscript(t)!;
+    const det = detectTranscript(t, info, []);
+    const offered = (det.uncertainSpans ?? []).map((s) => s.text);
+    expect(offered).toEqual(['Oriol', 'Toby']);
+  });
+
+  it('skips words also used in lower case', () => {
+    const t = `A: We saw the Garden, a garden center.\nB: Nice.\nA: The Garden again.\nB: ok.\n`;
+    const info = analyseTranscript(t)!;
+    expect(properNounCandidates(t, info, []).map((s) => s.text)).not.toContain('Garden');
   });
 });

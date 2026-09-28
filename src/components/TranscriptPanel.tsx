@@ -68,15 +68,15 @@ export function TranscriptPanel({ transcript, mode, onChange, onConfirm }: Trans
         Timestamps are kept as they are. Speaker names are replaced everywhere they appear,
         including in lower case.
       </p>
-      {info.language !== 'en' && (
+      {info.language === 'other' && (
         <p
           className="text-sm mt-3 rounded-lg px-3 py-2"
           style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid var(--color-warning)' }}
         >
-          This transcript looks {info.language === 'es' ? 'Spanish' : 'like it is not in English'}.
-          Name detection works best on English, so some names of other people may be missed and a
-          few ordinary words may be replaced. Check the names offered for review, and read the
-          result before sharing it.
+          We couldn&apos;t tell which language this transcript is in. Name detection is trained on
+          English, Dutch, German, Spanish, French, Italian and Portuguese; in other languages some
+          names may be missed. Check the names offered for review, and read the result before
+          sharing it.
         </p>
       )}
 
