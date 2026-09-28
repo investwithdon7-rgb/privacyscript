@@ -1,11 +1,14 @@
 import type { DetectionResult, Span } from '@/engine/detect';
+import { assessScriptCoverage, type ScriptWarning } from '@/engine/script-coverage';
 import { ENGINE_NAME, ENGINE_VERSION } from '@/lib/constants';
 
 export type ComplianceJurisdiction = 'EU' | 'UK' | 'US' | 'GENERAL';
 export type ComplianceVerdict =
   | 'SAFE'
   | 'NEEDS_DEIDENTIFICATION'
-  | 'DO_NOT_UPLOAD';
+  | 'DO_NOT_UPLOAD'
+  /** Document is in a script the engine cannot read — no verdict is possible. */
+  | 'CANNOT_ASSESS';
 export type ComplianceSeverity = 'LOW' | 'MEDIUM' | 'HIGH';
 export type ComplianceAction = 'NONE' | 'ANONYMISE' | 'PSEUDONYMISE';
 
@@ -38,6 +41,11 @@ export interface ComplianceReport {
   aiUploadSafety: ComplianceSafetyConclusion;
   findings: ComplianceFinding[];
   healthDataDetected: boolean;
+  /**
+   * Present when part or all of the document is in a script the engine cannot
+   * read. A non-null value means detection counts are not trustworthy.
+   */
+  scriptWarning: ScriptWarning | null;
   recommendedPrimaryAction: ComplianceAction;
   recommendedActions: ComplianceAction[];
   notes: string[];
@@ -134,6 +142,22 @@ export function assessCompliance(
     verdict = 'NEEDS_DEIDENTIFICATION';
   }
 
+  // A document the engine cannot read produces zero spans, which is
+  // indistinguishable from a clean document. Never certify that as safe.
+  //
+  // DO_NOT_UPLOAD is left intact: it is a definite negative built on
+  // identifiers we did find, and is more actionable than reporting
+  // uncertainty. The unreadable-script note is still attached below.
+  const scriptWarning = assessScriptCoverage(input.text);
+  if (scriptWarning) {
+    if (scriptWarning.severity === 'UNREADABLE' && verdict !== 'DO_NOT_UPLOAD') {
+      verdict = 'CANNOT_ASSESS';
+    } else if (scriptWarning.severity === 'PARTIAL' && verdict === 'SAFE') {
+      verdict = 'NEEDS_DEIDENTIFICATION';
+    }
+  }
+
+  const unreadable = scriptWarning?.severity === 'UNREADABLE';
   const aiUnsafe = verdict !== 'SAFE' || healthDataDetected || hasDirectIdentifiers;
   const distributionUnsafe = verdict !== 'SAFE';
   const primaryAction: ComplianceAction = aiUnsafe ? 'ANONYMISE' : 'NONE';
@@ -146,27 +170,35 @@ export function assessCompliance(
     jurisdictionLabel: JURISDICTION_LABELS[input.jurisdiction],
     verdict,
     verdictLabel: labelForVerdict(verdict),
-    verdictDescription: descriptionForVerdict(verdict),
+    verdictDescription:
+      verdict === 'CANNOT_ASSESS' && scriptWarning
+        ? scriptWarning.message
+        : descriptionForVerdict(verdict),
     distributionSafety: {
       safe: !distributionUnsafe,
       label: distributionUnsafe ? 'Not safe for distribution' : 'Appears safe for distribution',
-      description: distributionUnsafe
-        ? 'Personal or health-related data was detected. De-identify before sharing outside a controlled workflow.'
-        : 'No obvious personal or health identifiers were found. Review manually before sharing.',
+      description: unreadable
+        ? 'The document could not be read, so it has not been screened. Do not share it on the strength of this report.'
+        : distributionUnsafe
+          ? 'Personal or health-related data was detected. De-identify before sharing outside a controlled workflow.'
+          : 'No obvious personal or health identifiers were found. Review manually before sharing.',
     },
     aiUploadSafety: {
       safe: !aiUnsafe,
       label: aiUnsafe ? 'Not safe for AI upload' : 'Appears safe for AI upload',
-      description: aiUnsafe
-        ? aiUnsafeDescription(input.jurisdiction)
-        : 'No obvious personal or health identifiers were found. Confirm the document manually before upload.',
+      description: unreadable
+        ? 'The document could not be read, so no identifier check was possible. Do not upload it to an AI service on the strength of this report.'
+        : aiUnsafe
+          ? aiUnsafeDescription(input.jurisdiction)
+          : 'No obvious personal or health identifiers were found. Confirm the document manually before upload.',
     },
     findings,
     healthDataDetected,
+    scriptWarning,
     recommendedPrimaryAction: primaryAction,
     recommendedActions:
       primaryAction === 'NONE' ? ['NONE'] : ['ANONYMISE', 'PSEUDONYMISE'],
-    notes: notesFor(input.jurisdiction, verdict, healthDataDetected),
+    notes: notesFor(input.jurisdiction, verdict, healthDataDetected, scriptWarning),
   };
 }
 
@@ -242,6 +274,8 @@ function labelForVerdict(verdict: ComplianceVerdict): string {
       return 'Needs de-identification';
     case 'DO_NOT_UPLOAD':
       return 'Do not upload/share';
+    case 'CANNOT_ASSESS':
+      return 'Cannot be checked';
   }
 }
 
@@ -253,6 +287,8 @@ function descriptionForVerdict(verdict: ComplianceVerdict): string {
       return 'This document contains personal or health information. De-identify it before distribution or AI upload.';
     case 'DO_NOT_UPLOAD':
       return 'This document appears unsafe to share or upload to AI unless you have a compliant legal basis and processor agreement.';
+    case 'CANNOT_ASSESS':
+      return 'This document is written in a script PrivacyScript cannot read. No identifier check was possible. Review it manually before sharing.';
   }
 }
 
@@ -272,7 +308,8 @@ function aiUnsafeDescription(jurisdiction: ComplianceJurisdiction): string {
 function notesFor(
   jurisdiction: ComplianceJurisdiction,
   verdict: ComplianceVerdict,
-  healthDataDetected: boolean
+  healthDataDetected: boolean,
+  scriptWarning: ScriptWarning | null
 ): string[] {
   const notes = [
     'This screening is not legal advice. It is a conservative client-side risk check.',
@@ -280,7 +317,14 @@ function notesFor(
   if (healthDataDetected) {
     notes.push('Health-data context was detected or inferred from the document.');
   }
-  if (verdict !== 'SAFE') {
+  if (scriptWarning) {
+    notes.push(scriptWarning.message);
+  }
+  if (verdict === 'CANNOT_ASSESS') {
+    notes.push(
+      'Recommended next step: have someone who reads this document review it by hand. Do not rely on this report.'
+    );
+  } else if (verdict !== 'SAFE') {
     notes.push('Recommended next step: de-identify the document before sharing.');
   }
   notes.push(`Profile used: ${JURISDICTION_LABELS[jurisdiction]}.`);
