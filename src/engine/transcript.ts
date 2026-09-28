@@ -51,6 +51,29 @@ export interface TranscriptInfo {
   labelSpans: Array<{ start: number; end: number; speaker: string }>;
   /** Timestamps, cue numbers and cue IDs — excluded from detection. */
   structuralSpans: Array<{ start: number; end: number }>;
+  /** Main language, from common-word counts. Detection is tuned for 'en'. */
+  language: TranscriptLanguage;
+}
+
+export type TranscriptLanguage = 'en' | 'es' | 'other';
+
+const EN_WORDS = new Set(['the', 'and', 'to', 'of', 'is', 'that', 'it', 'you', 'in', 'for', 'with', 'but', 'so', 'this', 'was', 'have', 'we', 'they', 'what', 'yeah']);
+const ES_WORDS = new Set(['de', 'que', 'la', 'el', 'y', 'en', 'los', 'se', 'no', 'por', 'con', 'para', 'una', 'es', 'lo', 'pero', 'muy', 'más', 'las', 'también']);
+
+/** Rough main-language guess from very common words (no network, no model). */
+export function detectLanguage(text: string): TranscriptLanguage {
+  let en = 0;
+  let es = 0;
+  let total = 0;
+  for (const w of text.toLowerCase().match(/[a-záéíóúñü]+/g) ?? []) {
+    total++;
+    if (EN_WORDS.has(w)) en++;
+    if (ES_WORDS.has(w)) es++;
+  }
+  if (total < 20) return 'en';
+  if (es > en * 1.5 && es / total > 0.08) return 'es';
+  if (en / total > 0.06) return 'en';
+  return es / total > 0.06 ? 'es' : 'other';
 }
 
 export interface ContextFlag {
@@ -222,16 +245,29 @@ export function analyseTranscript(text: string): TranscriptInfo | null {
     }
   }
 
-  // Turns and questions per speaker (turn = text up to the next label).
+  // Turns and questions per speaker. Captioning splits one spoken turn into
+  // many short cues, so consecutive cues from the same speaker are ONE turn;
+  // otherwise the interviewer's questions are diluted below any threshold.
   const stats = new Map<string, { turns: number; questions: number; first: number }>();
+  let runSpeaker: string | null = null;
+  let runText = '';
+  const closeRun = () => {
+    if (runSpeaker === null) return;
+    const st = stats.get(runSpeaker)!;
+    st.turns++;
+    if (hasRealQuestion(runText)) st.questions++;
+  };
   labelSpans.forEach((l, i) => {
     const turnEnd = labelSpans[i + 1]?.start ?? text.length;
-    const turn = text.slice(l.end, turnEnd);
-    const st = stats.get(l.speaker) ?? { turns: 0, questions: 0, first: l.start };
-    st.turns++;
-    if (turn.includes('?')) st.questions++;
-    stats.set(l.speaker, st);
+    if (l.speaker !== runSpeaker) {
+      closeRun();
+      runSpeaker = l.speaker;
+      runText = '';
+      if (!stats.has(l.speaker)) stats.set(l.speaker, { turns: 0, questions: 0, first: l.start });
+    }
+    runText += ' ' + text.slice(l.end, turnEnd);
   });
+  closeRun();
 
   const ordered = Array.from(stats.entries()).sort((a, b) => a[1].first - b[1].first);
   // Interviewer: a label that says so, else the named speaker who asks the
@@ -245,7 +281,14 @@ export function analyseTranscript(text: string): TranscriptInfo | null {
     const second = ordered
       .map(([, s]) => s.questions / s.turns)
       .sort((a, b) => b - a)[1];
-    if (best.ratio >= 0.4 && best.ratio - (second ?? 0) >= 0.2) interviewers = new Set([best.label]);
+    // Clear questioner: a high share of question turns, or (in long real
+    // interviews full of "vale"/"yes" turns) several real questions at twice
+    // anyone else's rate. Anything less is left for the user to set.
+    const bestQuestions = stats.get(best.label)!.questions;
+    const clear =
+      best.ratio >= 2 * (second ?? 0) &&
+      (best.ratio >= 0.3 || (bestQuestions >= 5 && best.ratio >= 0.08));
+    if (clear) interviewers = new Set([best.label]);
   }
 
   let p = 0;
@@ -269,7 +312,51 @@ export function analyseTranscript(text: string): TranscriptInfo | null {
     LABELLED: 'Speaker-labelled transcript',
   }[kind];
 
-  return { kind, kindLabel, speakers, turnCount: labelSpans.length, labelSpans, structuralSpans };
+  return {
+    kind, kindLabel, speakers, turnCount: labelSpans.length, labelSpans, structuralSpans,
+    language: detectLanguage(text),
+  };
+}
+
+/**
+ * Recompute display labels from roles: "Interviewer" (numbered only when
+ * there are several) and "Participant n" in order of first appearance.
+ * Generic labels (P01, Interviewer) are left untouched.
+ */
+export function relabelSpeakers(speakers: Speaker[]): Speaker[] {
+  const named = speakers.filter((s) => s.isName);
+  const nInterviewers = named.filter((s) => s.role === 'INTERVIEWER').length;
+  let iv = 0;
+  let p = 0;
+  return speakers.map((s) => {
+    if (!s.isName) return s;
+    const display =
+      s.role === 'INTERVIEWER'
+        ? nInterviewers > 1 ? `Interviewer ${++iv}` : 'Interviewer'
+        : `Participant ${++p}`;
+    return { ...s, display };
+  });
+}
+
+/**
+ * Does this turn ask a real question? Tag questions ("right?", "¿no?",
+ * "you know?") don't count: a question needs at least three words.
+ * Spanish "¿…?" is supported.
+ */
+export function hasRealQuestion(turn: string): boolean {
+  return turn
+    .split(/(?<=[.!?…])\s+|\n+/)
+    .some((s) => {
+      let q = s.trim();
+      if (!q.endsWith('?')) return false;
+      const count = (t: string) => t.replace(/[¿?¡!.,…"“”]/g, ' ').trim().split(/\s+/).filter(Boolean).length;
+      // Spanish marks where the question starts: "Es así, ¿no?" asks "no".
+      const inverted = q.lastIndexOf('¿');
+      if (inverted >= 0) q = q.slice(inverted);
+      // English tag question: "It was fine, right?" asks only "right".
+      else if (q.includes(',') && count(q.slice(q.lastIndexOf(',') + 1)) <= 2) return false;
+      return count(q) >= 3;
+    });
 }
 
 // ─── Speaker spans ──────────────────────────────────────────────────────────
@@ -322,18 +409,60 @@ export function speakerSpans(text: string, info: TranscriptInfo): Span[] {
     let m: RegExpExecArray | null;
     while ((m = re.exec(text))) push(m.index, m.index + m[0].length);
   }
+
+  // Speech-to-text often mishears a speaker's own name ("Marcus" for
+  // "Marcos"). Catch close spellings of a speaker's name parts.
+  const single = parts.filter((p) => !/\s/.test(p));
+  const lowercaseWords = new Set(text.match(/\b[a-z][a-z'’]+\b/g) ?? []);
+  const wordRe = /(?<![\w'’])[A-Z][a-z]{3,}(?![\w'’])/g;
+  let w: RegExpExecArray | null;
+  while ((w = wordRe.exec(text))) {
+    // A word also used in lower case ("hello") is ordinary vocabulary.
+    if (lowercaseWords.has(w[0].toLowerCase())) continue;
+    if (single.some((p) => isSpeakerVariant(w![0], p))) push(w.index, w.index + w[0].length);
+  }
   return spans.sort((a, b) => a.start - b.start);
+}
+
+/**
+ * Is `word` a plausible mis-transcription of the speaker name part `name`?
+ * Same first two letters, length within one, and at most one edit (5-letter
+ * names) or two edits (6+). Shorter names are never fuzzy-matched.
+ */
+export function isSpeakerVariant(word: string, name: string): boolean {
+  const a = word.toLowerCase();
+  const b = name.toLowerCase();
+  if (a === b || b.length < 5) return false;
+  if (a.slice(0, 2) !== b.slice(0, 2) || Math.abs(a.length - b.length) > 1) return false;
+  return editDistance(a, b) <= (b.length >= 6 ? 2 : 1);
+}
+
+function editDistance(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return prev[b.length];
 }
 
 const RELATION_NAME_RE =
   /\b[Mm]y\s+(?:husband|wife|partner|son|daughter|mum|mom|mother|dad|father|brother|sister|grandson|granddaughter|grandma|grandad|nan|nana|aunt|auntie|uncle|cousin|friend|neighbour|neighbor|carer|boss|manager|colleague|niece|nephew)\s*,?\s+([A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})?)\b/g;
 
-/** Names introduced by a relationship: "my daughter Amira", "my son, Tom". */
+const RELATION_NAME_ES_RE =
+  /(?<![\p{L}])[Mm]i\s+(?:hij[oa]|mujer|marido|esposa|esposo|madre|padre|mam[aá]|pap[aá]|herman[oa]|pareja|niet[oa]|amig[oa]|jef[ea]|vecin[oa]|prim[oa]|t[ií][oa]|suegr[oa]|cu[ñn]ad[oa])\s*,?\s+(\p{Lu}\p{Ll}{2,}(?:\s+\p{Lu}\p{Ll}{2,})?)/gu;
+
+/** Names introduced by a relationship: "my daughter Amira", "mi hija Amira". */
 export function relationshipNames(text: string): string[] {
   const out = new Set<string>();
   let m: RegExpExecArray | null;
-  RELATION_NAME_RE.lastIndex = 0;
-  while ((m = RELATION_NAME_RE.exec(text))) out.add(m[1]);
+  for (const re of [RELATION_NAME_RE, RELATION_NAME_ES_RE]) {
+    re.lastIndex = 0;
+    while ((m = re.exec(text))) out.add(m[1]);
+  }
   return Array.from(out);
 }
 
@@ -430,6 +559,31 @@ interface Cue {
   reason: string;
 }
 
+// Accented letters are not \w, so Spanish cues use explicit letter-class
+// lookarounds instead of \b.
+const NL = '(?<![\\p{L}])';
+const NR = '(?![\\p{L}])';
+const es = (body: string) => new RegExp(NL + '(?:' + body + ')' + NR, 'iu');
+
+const CUES_ES: Cue[] = [
+  {
+    re: es('soy (?:el|la) [uú]nic[oa]|el [uú]nico|la [uú]nica|todo el mundo me conoce|me conoce todo el mundo|sal[ií] en (?:la tele|el peri[oó]dico|las noticias|la radio)'),
+    reason: 'Says something unique about a person',
+  },
+  {
+    re: es('trabaj(?:o|aba|a|an|amos|é) (?:de|como|en|para)|soy (?:enfermer[oa]|m[eé]dic[oa]|profesor[a]?|maestr[oa]|polic[ií]a|abogad[oa]|administrativ[oa]|ingenier[oa]|farmac[eé]utic[oa])'),
+    reason: 'Mentions where someone works',
+  },
+  {
+    re: es('viv(?:o|[ií]a|imos|e|en) en|soy de|nac[ií] en|me mud[eé] a|me cri[eé] en'),
+    reason: 'Mentions where someone lives or comes from',
+  },
+  {
+    re: es('mi (?:mujer|marido|esposa|esposo|hij[oa]|madre|padre|herman[oa]|pareja|jef[ea])[^.?!]{0,60}(?:trabaja|vive|estudia|es (?:un|una))'),
+    reason: 'Describes a family member or colleague in detail',
+  },
+];
+
 const CUES: Cue[] = [
   {
     re: /\b(?:the only|only one|one of the only|one of (?:very )?few|the first (?:person|woman|man|nurse|doctor)|everyone (?:here |round here |there )?knows (?:me|him|her|us)|you'?d know (?:me|who)|well[\s-]known|famous)\b/i,
@@ -474,7 +628,7 @@ export function contextualFlags(text: string, info: TranscriptInfo | null): Cont
     start += lead;
     end = start + sentence.trim().length;
     if (end - start < 12) continue;
-    const cue = CUES.find((c) => c.re.test(text.slice(start, end)));
+    const cue = [...CUES, ...CUES_ES].find((c) => c.re.test(text.slice(start, end)));
     if (cue) flags.push({ id: id++, start, end, text: text.slice(start, end), reason: cue.reason });
   }
   return flags;
@@ -539,6 +693,13 @@ export function transcriptLabeller(
     if (label === 'NAME') {
       const sp = speakerOf.get(key) ?? speakerOf.get(norm(stripTitle(original)));
       if (sp) return sp;
+      // A misheard spelling of a speaker's name is that speaker.
+      const words = stripTitle(original).trim().split(/\s+/);
+      if (words.length === 1) {
+        for (const [part, out] of Array.from(speakerOf.entries())) {
+          if (!/\s/.test(part) && isSpeakerVariant(words[0], part)) return out;
+        }
+      }
     }
     if (!readable) return null;
     const noun = READABLE_LABELS[label];
@@ -627,12 +788,16 @@ export function detectTranscript(
   const detection = detect(text, [...nerSpans, ...forced]);
   let spans = dropStructural(detection.spans, info);
   const quasiSpans = dropStructural(detection.quasiSpans, info);
+  // A single word that also appears in lower case ("but", "perfect") is
+  // ordinary vocabulary, even if the model tagged one occurrence as a name;
+  // spreading it to every mention would wreck the transcript.
+  const lowercaseWords = new Set(text.match(/\b[a-z][a-z'’]+\b/g) ?? []);
   const knownNames = [
     ...relationshipNames(text),
     ...spans
       .filter((sp) => sp.label === 'NAME' && (sp.source === 'rule' || (sp.confidence ?? 1) >= 0.9))
       .map((sp) => text.slice(sp.captureStart ?? sp.start, sp.captureEnd ?? sp.end)),
-  ];
+  ].filter((n) => /\s/.test(n.trim()) || !lowercaseWords.has(n.trim().toLowerCase()));
   spans = [...spans, ...nameMentionSpans(text, knownNames, info, [...spans, ...quasiSpans])].sort(
     (a, b) => a.start - b.start
   );

@@ -20,3 +20,8 @@ PRIVACYSCRIPT_OVERVIEW.md
 PrivacyScript_Contract_Build_Spec.md
 marketing/
 .leak-harness.cjs
+
+# Real (non-synthetic) test material: never commit
+PH records/Testing Zoom Meeting.txt
+PH records/*.vtt
+*.local.test.ts

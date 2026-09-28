@@ -31,6 +31,7 @@ import {
   analyseTranscript,
   contextualFlags,
   detectTranscript,
+  nameMentionSpans,
   passageSpan,
   transcriptLabeller,
   type TranscriptState,
@@ -583,7 +584,26 @@ export async function finalise(): Promise<void> {
     const removedFlags = tr ? tr.flags.filter((f) => tr.flagDecisions[f.id] === 'remove') : [];
     const passageSpans = removedFlags.map((f) => passageSpan(s.originalText!, f));
 
-    const allSpans = [...activeSpans, ...s.userAddedSpans, ...confirmedUncertain, ...passageSpans];
+    // 5. Transcripts: a name the user confirmed (from the uncertain list or by
+    //    marking it) is replaced at every mention, not just the one reviewed.
+    const confirmedNameSpans = tr
+      ? nameMentionSpans(
+          s.originalText,
+          [...confirmedUncertain, ...s.userAddedSpans]
+            .filter((sp) => sp.label === 'NAME')
+            .map((sp) => s.originalText!.slice(sp.start, sp.end)),
+          tr.info,
+          [...activeSpans, ...activeQuasi, ...s.userAddedSpans, ...confirmedUncertain, ...passageSpans]
+        )
+      : [];
+
+    const allSpans = [
+      ...activeSpans,
+      ...s.userAddedSpans,
+      ...confirmedUncertain,
+      ...passageSpans,
+      ...confirmedNameSpans,
+    ];
 
     const replacement = await replaceSpans(
       s.originalText,

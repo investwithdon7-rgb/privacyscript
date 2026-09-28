@@ -1,7 +1,7 @@
 'use client';
 
 import type { Mode } from '@/lib/constants';
-import type { TranscriptState } from '@/engine/transcript';
+import { relabelSpeakers, type SpeakerRole, type TranscriptState } from '@/engine/transcript';
 
 interface TranscriptPanelProps {
   transcript: TranscriptState;
@@ -35,6 +35,16 @@ export function TranscriptPanel({ transcript, mode, onChange, onConfirm }: Trans
       },
     });
 
+  // Changing a role renumbers everyone: "Interviewer", "Participant 1, 2…".
+  const setRole = (label: string, role: SpeakerRole) =>
+    onChange({
+      ...transcript,
+      info: {
+        ...info,
+        speakers: relabelSpeakers(info.speakers.map((s) => (s.label === label ? { ...s, role } : s))),
+      },
+    });
+
   const decide = (id: number, d: 'keep' | 'remove') =>
     onChange({ ...transcript, flagDecisions: { ...flagDecisions, [id]: d } });
 
@@ -58,6 +68,17 @@ export function TranscriptPanel({ transcript, mode, onChange, onConfirm }: Trans
         Timestamps are kept as they are. Speaker names are replaced everywhere they appear,
         including in lower case.
       </p>
+      {info.language !== 'en' && (
+        <p
+          className="text-sm mt-3 rounded-lg px-3 py-2"
+          style={{ background: 'rgba(245,158,11,0.08)', border: '1px solid var(--color-warning)' }}
+        >
+          This transcript looks {info.language === 'es' ? 'Spanish' : 'like it is not in English'}.
+          Name detection works best on English, so some names of other people may be missed and a
+          few ordinary words may be replaced. Check the names offered for review, and read the
+          result before sharing it.
+        </p>
+      )}
 
       {/* Speakers */}
       <h3 className="mono text-[11px] uppercase tracking-widest text-[color:var(--color-muted)] mt-6">
@@ -74,18 +95,34 @@ export function TranscriptPanel({ transcript, mode, onChange, onConfirm }: Trans
               </div>
             </div>
             {s.isName ? (
-              <label className="block">
-                <span className="sr-only">Replace {s.label} with</span>
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-[color:var(--color-muted)] shrink-0">becomes</span>
-                  <input
-                    className={inputClass}
-                    value={s.display}
-                    onChange={(e) => setDisplay(s.label, e.target.value)}
-                    maxLength={40}
-                  />
+              <div>
+                <label className="block">
+                  <span className="sr-only">Replace {s.label} with</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-[color:var(--color-muted)] shrink-0">becomes</span>
+                    <input
+                      className={inputClass}
+                      value={s.display}
+                      onChange={(e) => setDisplay(s.label, e.target.value)}
+                      maxLength={40}
+                    />
+                  </div>
+                </label>
+                <div className="flex gap-2 mt-2" role="radiogroup" aria-label={`Role of ${s.label}`}>
+                  {(['INTERVIEWER', 'PARTICIPANT'] as const).map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      role="radio"
+                      aria-checked={s.role === r}
+                      className={choiceClass(s.role === r, 'neutral')}
+                      onClick={() => setRole(s.label, r)}
+                    >
+                      {r === 'INTERVIEWER' ? 'Interviewer' : 'Participant'}
+                    </button>
+                  ))}
                 </div>
-              </label>
+              </div>
             ) : (
               <div className="text-sm text-[color:var(--color-muted)]">Kept as “{s.label}”</div>
             )}

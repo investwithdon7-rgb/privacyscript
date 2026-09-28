@@ -10,7 +10,11 @@ import { generateSessionSecret } from '@/engine/crypto';
 import {
   analyseTranscript,
   contextualFlags,
+  detectTranscript,
   dropStructural,
+  hasRealQuestion,
+  relabelSpeakers,
+  isSpeakerVariant,
   nameMentionSpans,
   passageSpan,
   relationshipNames,
@@ -234,5 +238,62 @@ describe('meeting chat logs', () => {
     expect(out.text).not.toMatch(/Okafor|Carter|Rahman/);
     expect(out.text).toContain('to Everyone:');
     expect(out.text).toContain('10:02:33 From [');
+  });
+});
+
+describe('real-transcript safeguards', () => {
+  it('treats a misheard spelling of a speaker as that speaker', async () => {
+    const t = `Lena Moretti: Thanks.\nMarcos Delgado: Okay.\nLena Moretti: Thank you for everything, Marcus. Bye-bye.\nMarcos Delgado: Bye.\n`;
+    const info = analyseTranscript(t)!;
+    const det = detectTranscript(t, info, []);
+    const out = await replaceSpans(t, det.spans, [], {
+      mode: 'ANONYMISE', quasiToRedact: new Set(), labeller: transcriptLabeller(info, true, []),
+    });
+    expect(out.text).toContain('Thank you for everything, [Participant 2].');
+    // Ordinary words close to a name are not touched.
+    expect(isSpeakerVariant('Hello', 'Helen')).toBe(false);
+    expect(isSpeakerVariant('Marcus', 'Marcos')).toBe(true);
+    const t2 = `Helen Carter: hello there.\nSam Lee: Hello Helen.\nHelen Carter: yes.\nSam Lee: ok.\n`;
+    const i2 = analyseTranscript(t2)!;
+    expect(speakerSpans(t2, i2).map((s) => s.text)).not.toContain('Hello');
+  });
+
+  it('does not spread a mis-tagged common word to every mention', () => {
+    const t = `A: But why?\nB: but it works, and it is fine.\nA: But ok.\nB: fine.\n`;
+    const info = analyseTranscript(t)!;
+    const fakeNer = [{ start: 3, end: 6, text: 'But', label: 'NAME' as const, category: 'HIPAA' as const, source: 'ner' as const, confidence: 0.99 }];
+    const det = detectTranscript(t, info, fakeNer);
+    expect(det.spans.filter((s) => s.text.toLowerCase() === 'but')).toHaveLength(1);
+  });
+});
+
+describe('Spanish transcripts', () => {
+  const ES = `Carmen Ortega: ¿Podrías describir tus síntomas?\nDiego Salas: Sí. Trabajo de administrativo y me cuesta concentrarme.\nCarmen Ortega: ¿Y en casa?\nDiego Salas: Mi hija Lucía me ayuda. Soy el único con esta enfermedad en el pueblo. lucía es muy buena.\n`;
+
+  it('detects the language and flags Spanish context cues', () => {
+    const info = analyseTranscript(ES)!;
+    expect(info.language).toBe('es');
+    const reasons = contextualFlags(ES, info).map((f) => f.reason);
+    expect(reasons).toContain('Mentions where someone works');
+    expect(reasons).toContain('Says something unique about a person');
+  });
+
+  it('finds relationship names in Spanish and every later mention', () => {
+    const info = analyseTranscript(ES)!;
+    expect(relationshipNames(ES)).toEqual(['Lucía']);
+    const found = nameMentionSpans(ES, relationshipNames(ES), info, []).map((s) => s.text);
+    expect(found).toEqual(['Lucía', 'lucía']);
+  });
+
+  it('counts only real questions, including ¿…?', () => {
+    expect(hasRealQuestion('¿Podrías describir tus síntomas?')).toBe(true);
+    expect(hasRealQuestion('Es así, ¿no?')).toBe(false);
+    expect(hasRealQuestion('It was fine, right?')).toBe(false);
+  });
+
+  it('renumbers speakers when a role is changed', () => {
+    const info = analyseTranscript(ES)!;
+    const changed = relabelSpeakers(info.speakers.map((s) => (s.label === 'Carmen Ortega' ? { ...s, role: 'INTERVIEWER' as const } : { ...s, role: 'PARTICIPANT' as const })));
+    expect(changed.map((s) => s.display)).toEqual(['Interviewer', 'Participant 1']);
   });
 });
