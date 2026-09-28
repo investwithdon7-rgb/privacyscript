@@ -33,6 +33,14 @@ const VERDICT_COLOURS: Record<
     border: '#EF4444',
     text: '#EF4444',
   },
+  // Amber, matching the design system's "review required" semantics. The
+  // verdict label carries the distinction from NEEDS_DEIDENTIFICATION; what
+  // matters here is that an unreadable document never renders as green.
+  CANNOT_ASSESS: {
+    bg: 'rgba(245,158,11,0.14)',
+    border: '#F59E0B',
+    text: '#F59E0B',
+  },
 };
 
 const SEVERITY_COLOURS: Record<string, string> = {

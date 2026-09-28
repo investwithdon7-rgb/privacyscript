@@ -39,7 +39,7 @@ export function detectFormat(filename: string, content: string): RecordFormat {
   }
   if (ext === 'pdf') return 'PDF_TYPED'; // PDF subtype resolved later in the PDF pipeline
   if (ext === 'docx') return 'DOCX';
-  if (ext === 'csv' || ext === 'tsv') return 'CSV';
+  if (ext === 'csv' || ext === 'tsv' || ext === 'xlsx' || ext === 'sav') return 'CSV';
   if (ext === 'txt' || ext === 'md') return 'TEXT';
 
   // Sniff content
@@ -78,12 +78,9 @@ export async function readFileAsText(file: File): Promise<string> {
         `please keep text files under ${MAX_TEXT_FILE_BYTES / 1_048_576} MB.`
     );
   }
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result ?? ''));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsText(file);
-  });
+  // Blob.text() decodes UTF-8 exactly like FileReader.readAsText, and also
+  // works outside the browser (tests, workers).
+  return file.text();
 }
 
 /** Detect format from filename only — used for binary inputs before we read. */

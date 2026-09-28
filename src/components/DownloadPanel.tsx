@@ -42,12 +42,19 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
 
   const baseName = (s.filename ?? 'record').replace(/\.[^.]+$/, '');
   const isDocx = s.format === 'DOCX';
+  // Transcripts keep their caption format (.vtt / .srt) so players still load them.
+  const sourceExt = (s.filename ?? '').split('.').pop()?.toLowerCase() ?? '';
+  const keepTextExt = s.format === 'TEXT' && ['vtt', 'srt', 'md'].includes(sourceExt);
   const ext = isDocx
     ? docxExt(s.docxFormat)
-    : FORMAT_EXT[s.format ?? 'TEXT'] ?? 'txt';
+    : keepTextExt
+      ? sourceExt
+      : FORMAT_EXT[s.format ?? 'TEXT'] ?? 'txt';
   const mime = isDocx
     ? docxMime(s.docxFormat)
-    : MIME[s.format ?? 'TEXT'] ?? 'text/plain';
+    : keepTextExt && sourceExt === 'vtt'
+      ? 'text/vtt'
+      : MIME[s.format ?? 'TEXT'] ?? 'text/plain';
 
   const downloadRecord = () => {
     const filename = `${baseName}.deidentified.${ext}`;
@@ -199,6 +206,10 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
           >
             {keyDownloaded ? 'Download again' : 'Download encrypted key'}
           </button>
+          <p className="text-xs text-[color:var(--color-muted)] mt-3">
+            To look up a code or restore the original later, use{' '}
+            <a href="/privacyscript/key/" className="underline hover:text-white">Open a key file</a>.
+          </p>
         </div>
       ) : null}
     </div>

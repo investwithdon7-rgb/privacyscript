@@ -1,215 +1,256 @@
 'use client';
 
 /**
- * Batch de-identification hook.
+ * Batch de-identification hook for research studies.
  *
- * Accepts a FileList (from a folder drop or ZIP). For each file it runs the
- * full detect → replace → validate pipeline, collects results, and makes them
- * available for download as a ZIP archive (using JSZip, lazily imported).
+ * Phases: idle → analysing → review → releasing → done.
  *
- * The hook is entirely client-side — no data leaves the browser.
+ * - analysing: every file is ingested and scanned; transcripts get speakers
+ *   and flagged passages; named speakers get ONE label across the study.
+ * - review:    the user decides on every flagged passage (all files, one
+ *   screen) before anything is produced.
+ * - releasing: outputs are built with a shared label registry and session
+ *   secret, and each output is validated as released. Files failing a
+ *   non-negotiable check are HELD BACK, not zipped.
+ * - done:      ZIP of released files + audits + a batch summary. The
+ *   re-identification key (pseudonymise) is a separate, passphrase-encrypted
+ *   download — never inside the ZIP next to the data it unlocks.
+ *
+ * Entirely client-side — no data leaves the browser.
  */
 
-import { useState, useCallback } from 'react';
-import { detect } from '@/engine/detect';
-import { runClinicalNER } from '@/engine/ner';
-import { replaceSpans } from '@/engine/replace';
-import { assessRisk } from '@/engine/risk';
-import { validate } from '@/engine/validate';
-import { buildAuditLog } from '@/engine/output';
-import { detectFormat, readFileAsText } from '@/engine/ingest';
-import { generateSessionSecret } from '@/engine/crypto';
-import type { Mode, ComplianceProfileId } from '@/lib/constants';
-import { COMPLIANCE_PROFILES } from '@/lib/constants';
+import { useCallback, useRef, useState } from 'react';
+import { cancelNer, NerCancelledError, runClinicalNER } from '@/engine/ner';
+import { generateSessionSecret, encryptKeyFile, type SessionSecret } from '@/engine/crypto';
+import { downloadBlob, downloadJSON } from '@/engine/output';
+import { finaliseFile, prepareFile, type FinalisedFile, type PreparedFile } from '@/engine/batch';
+import { assignStudySpeakers, createLabelRegistry } from '@/engine/transcript';
+import { ENGINE_NAME, ENGINE_VERSION, type ComplianceProfileId, type Mode } from '@/lib/constants';
 
-export type BatchItemStatus = 'pending' | 'processing' | 'done' | 'error';
+export type BatchPhase = 'idle' | 'analysing' | 'review' | 'releasing' | 'done';
+
+export type BatchItemStatus =
+  | 'pending'
+  | 'processing'
+  | 'ready'
+  | 'skipped'
+  | 'error'
+  | 'released'
+  | 'held';
 
 export interface BatchItem {
   id: string;
   filename: string;
   size: number;
   status: BatchItemStatus;
-  error?: string;
+  /** Skip / error / hold-back reason, in plain language. */
+  message?: string;
   spansFound?: number;
+  flags?: number;
   riskLevel?: string;
   validationPassed?: boolean;
 }
 
-export interface BatchResult {
+export type FlagDecisions = Record<string, Record<number, 'keep' | 'remove'>>;
+
+export interface BatchState {
+  phase: BatchPhase;
+  mode: Mode;
+  profileId: ComplianceProfileId;
   items: BatchItem[];
-  total: number;
-  done: number;
-  errors: number;
-  isRunning: boolean;
-  isFinished: boolean;
-  downloadZip: (() => Promise<void>) | null;
+  prepared: PreparedFile[];
+  decisions: FlagDecisions;
+  readable: boolean;
+  finalised: FinalisedFile[];
 }
 
-/**
- * Process multiple files through the de-identification pipeline.
- * Returns live status for each file and a downloadZip function when complete.
- */
+const INITIAL: BatchState = {
+  phase: 'idle',
+  mode: 'PSEUDONYMISE',
+  profileId: 'GDPR_PSEUDO',
+  items: [],
+  prepared: [],
+  decisions: {},
+  readable: true,
+  finalised: [],
+};
+
 export function useBatchDeidentification() {
-  const [result, setResult] = useState<BatchResult>({
-    items: [],
-    total: 0,
-    done: 0,
-    errors: 0,
-    isRunning: false,
-    isFinished: false,
-    downloadZip: null,
-  });
+  const [state, setState] = useState<BatchState>(INITIAL);
+  // The secret lives only in memory for this batch; never serialised in clear.
+  const secretRef = useRef<SessionSecret | null>(null);
+  const cancelledRef = useRef(false);
 
-  const runBatch = useCallback(
-    async (files: File[], mode: Mode, profileId: ComplianceProfileId) => {
-      const profile = COMPLIANCE_PROFILES[profileId];
+  const patchItem = (id: string, patch: Partial<BatchItem>) =>
+    setState((s) => ({ ...s, items: s.items.map((it) => (it.id === id ? { ...it, ...patch } : it)) }));
 
-      // Build initial item list
-      const items: BatchItem[] = files.map((f, i) => ({
-        id: String(i),
-        filename: f.name,
-        size: f.size,
-        status: 'pending',
-      }));
-      setResult({ items: [...items], total: files.length, done: 0, errors: 0, isRunning: true, isFinished: false, downloadZip: null });
+  const analyse = useCallback(async (files: File[], mode: Mode, profileId: ComplianceProfileId) => {
+    const items: BatchItem[] = files.map((f, i) => ({
+      id: String(i), filename: f.name, size: f.size, status: 'pending',
+    }));
+    secretRef.current = null;
+    setState({ ...INITIAL, phase: 'analysing', mode, profileId, items });
 
-      // Shared pseudonymisation secret for the batch (all files get the same mapping).
-      const secret = mode === 'PSEUDONYMISE' ? await generateSessionSecret() : undefined;
-
-      // Output store: filename → Blob for zip bundling.
-      const outputs: Array<{ name: string; blob: Blob; audit: object }> = [];
-
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const item = items[i];
-
-        // Mark as processing
-        item.status = 'processing';
-        setResult((prev) => ({ ...prev, items: [...items] }));
-
-        try {
-          // Ingest
-          let text: string;
-          const format = detectFormat(file.name, '');
-          if (format === 'PDF_TYPED' || format === 'PDF_SCANNED' || format === 'DOCX' || format === 'DICOM') {
-            // Binary formats: use a plain text extraction for batch mode.
-            // (Full binary reconstruction is a v2 feature for batch.)
-            text = `[Binary format ${format} — text extraction not available in batch mode. File: ${file.name}]`;
-          } else {
-            text = await readFileAsText(file);
-          }
-
-          // NER + detect
-          const nerSpans = await runClinicalNER(text);
-          const detection = detect(text, nerSpans);
-
-          // Replace
-          const autoRedact = new Set(
-            profile.suppressAllQuasi
-              ? detection.quasiSpans.map((q) => q.label)
-              : detection.quasiSpans
-                  .filter((q) => q.label === 'RARE_DISEASE_ICD' && q.rareTier === 'auto')
-                  .map((q) => q.label)
-          );
-
-          const replacement = await replaceSpans(
-            text,
-            detection.spans,
-            detection.quasiSpans,
-            { mode, secret, quasiToRedact: autoRedact }
-          );
-
-          // Risk + validate
-          const retainedQuasi = detection.quasiSpans.filter((q) => !autoRedact.has(q.label));
-          const risk = assessRisk({
-            detectedSpans: detection.spans,
-            retainedQuasiSpans: retainedQuasi,
-            recordCount: 1,
-            kThreshold: profile.kThreshold,
-          });
-          const validation = await validate(replacement.text, {
-            mode,
-            originalIdentifiers: Object.keys(replacement.mapping),
-          });
-
-          const audit = buildAuditLog({
-            mode,
-            inputFormat: format,
-            inputSize: file.size,
-            outputSize: replacement.text.length,
-            detectedSpans: detection.spans,
-            replacementsMade: replacement.replacements.length,
-            risk,
-            validationPassed: validation.passed,
-            complianceProfile: profileId,
-          });
-
-          // Store output
-          outputs.push({
-            name: file.name.replace(/\.[^.]+$/, '') + '.deidentified.txt',
-            blob: new Blob([replacement.text], { type: 'text/plain' }),
-            audit,
-          });
-
-          item.status = 'done';
-          item.spansFound = detection.spans.length;
-          item.riskLevel = risk.level;
-          item.validationPassed = validation.passed;
-        } catch (err) {
-          item.status = 'error';
-          item.error = (err as Error).message;
-        }
-
-        const done = items.filter((x) => x.status === 'done').length;
-        const errors = items.filter((x) => x.status === 'error').length;
-        setResult((prev) => ({ ...prev, items: [...items], done, errors }));
+    cancelledRef.current = false;
+    const prepared: PreparedFile[] = [];
+    for (let i = 0; i < files.length; i++) {
+      // Cancelled: stop scanning and go back to the start. Nothing was produced.
+      if (cancelledRef.current) {
+        setState(INITIAL);
+        return;
       }
-
-      // Build downloadZip closure
-      const downloadZip = async () => {
-        const JSZip = (await import('jszip')).default;
-        const zip = new JSZip();
-        const deIdFolder = zip.folder('deidentified')!;
-        const auditFolder = zip.folder('audits')!;
-
-        for (const out of outputs) {
-          deIdFolder.file(out.name, out.blob);
-          auditFolder.file(out.name.replace('.txt', '.audit.json'), JSON.stringify(out.audit, null, 2));
+      const id = String(i);
+      patchItem(id, { status: 'processing' });
+      try {
+        const p = await prepareFile(files[i], id, (text, opts) =>
+          runClinicalNER(text, {
+            ...opts,
+            onProgress: (done, total) =>
+              patchItem(id, { message: `Finding names… part ${done} of ${total}` }),
+          })
+        );
+        patchItem(id, { message: undefined });
+        prepared.push(p);
+        patchItem(
+          id,
+          p.skipReason
+            ? { status: 'skipped', message: p.skipReason }
+            : {
+                status: 'ready',
+                message: p.scriptWarning
+                  ? `Part is in ${p.scriptWarning.scripts.join(', ') || 'a script'} that cannot be checked. It will be held back; open it on its own.`
+                  : undefined,
+                spansFound: (p.detection?.spans.length ?? 0) + (p.detection?.quasiSpans.length ?? 0),
+                flags: p.transcript?.flags.length ?? 0,
+              }
+        );
+      } catch (err) {
+        if (err instanceof NerCancelledError) {
+          setState(INITIAL);
+          return;
         }
+        patchItem(id, { status: 'error', message: (err as Error).message });
+      }
+    }
 
-        // Secret mapping (pseudonymise only)
-        if (mode === 'PSEUDONYMISE' && secret) {
-          zip.file(
-            'batch-session-secret.KEEP-SAFE.json',
-            JSON.stringify({
-              note: 'Keep this secret. Required to reverse pseudonyms.',
-              sessionSecretHex: Array.from(secret.rawKey)
-                .map((b: number) => b.toString(16).padStart(2, '0'))
-                .join(''),
-            }, null, 2)
-          );
-        }
+    // One label per named speaker across the whole study.
+    assignStudySpeakers(prepared.flatMap((p) => (p.transcript ? [p.transcript.info] : [])));
+    setState((s) => ({ ...s, phase: 'review', prepared }));
+  }, []);
 
-        const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
-        const url = URL.createObjectURL(zipBlob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'privacyscript-batch.zip';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 2000);
-      };
+  const decide = useCallback((fileId: string, flagId: number, d: 'keep' | 'remove') => {
+    setState((s) => ({
+      ...s,
+      decisions: { ...s.decisions, [fileId]: { ...(s.decisions[fileId] ?? {}), [flagId]: d } },
+    }));
+  }, []);
 
-      setResult((prev) => ({
-        ...prev,
-        isRunning: false,
-        isFinished: true,
-        downloadZip,
-      }));
+  const decideAll = useCallback((d: 'keep' | 'remove') => {
+    setState((s) => ({
+      ...s,
+      decisions: Object.fromEntries(
+        s.prepared
+          .filter((p) => p.transcript)
+          .map((p) => [p.id, Object.fromEntries(p.transcript!.flags.map((f) => [f.id, d]))])
+      ),
+    }));
+  }, []);
+
+  const setReadable = useCallback((readable: boolean) => setState((s) => ({ ...s, readable })), []);
+
+  const release = useCallback(async () => {
+    const s = state;
+    setState((x) => ({ ...x, phase: 'releasing' }));
+    if (s.mode === 'PSEUDONYMISE' && !secretRef.current) {
+      secretRef.current = await generateSessionSecret();
+    }
+    const registry = createLabelRegistry();
+    const finalised: FinalisedFile[] = [];
+    // Files in the original order so numbering follows the study order.
+    for (const p of s.prepared) {
+      if (p.skipReason) continue;
+      patchItem(p.id, { status: 'processing' });
+      try {
+        const f = await finaliseFile(p, {
+          mode: s.mode,
+          profileId: s.profileId,
+          secret: secretRef.current ?? undefined,
+          readable: s.readable,
+          decisions: s.decisions[p.id] ?? {},
+          registry,
+        });
+        finalised.push(f);
+        patchItem(p.id, {
+          status: f.heldBack ? 'held' : 'released',
+          message: f.heldBack,
+          riskLevel: f.risk.level,
+          validationPassed: f.validation.passed,
+        });
+      } catch (err) {
+        patchItem(p.id, { status: 'error', message: (err as Error).message });
+      }
+    }
+    setState((x) => ({ ...x, phase: 'done', finalised }));
+  }, [state]);
+
+  const downloadZip = useCallback(async () => {
+    const JSZip = (await import('jszip')).default;
+    const zip = new JSZip();
+    const released = state.finalised.filter((f) => !f.heldBack);
+    for (const f of released) {
+      zip.folder('deidentified')!.file(f.outputName, f.output);
+    }
+    // Audits for every processed file, including held-back ones (they say why).
+    for (const f of state.finalised) {
+      zip.folder('audits')!.file(`${f.name}.audit.json`, JSON.stringify(f.audit, null, 2));
+    }
+    zip.file(
+      'batch-summary.json',
+      JSON.stringify(
+        {
+          engine: ENGINE_NAME,
+          engineVersion: ENGINE_VERSION,
+          timestamp: new Date().toISOString(),
+          mode: state.mode,
+          complianceProfile: state.profileId,
+          replacementStyle: state.readable ? 'readable labels' : 'codes',
+          released: released.map((f) => f.name),
+          heldBack: state.finalised.filter((f) => f.heldBack).map((f) => ({ file: f.name, reason: f.heldBack })),
+          notProcessed: state.items
+            .filter((i) => i.status === 'skipped' || i.status === 'error')
+            .map((i) => ({ file: i.filename, reason: i.message })),
+          // Labels only — never original values.
+          note: 'No original identifiers are stored in this archive. The re-identification key, if any, is a separate encrypted file.',
+        },
+        null,
+        2
+      )
+    );
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+    downloadBlob(blob, 'privacyscript-batch.zip');
+  }, [state]);
+
+  /** Pseudonymise only: one encrypted key file for the whole study. */
+  const downloadKey = useCallback(
+    async (passphrase: string) => {
+      if (!secretRef.current) throw new Error('No session key. Run the batch again.');
+      const mapping = Object.assign({}, ...state.finalised.filter((f) => !f.heldBack).map((f) => f.mapping));
+      const encrypted = await encryptKeyFile(secretRef.current.rawKey, mapping, passphrase);
+      downloadJSON(encrypted, 'privacyscript-batch.privacyscript.key');
     },
-    []
+    [state]
   );
 
-  return { result, runBatch };
+  /** Stop scanning: the running file is abandoned and nothing is produced. */
+  const cancel = useCallback(() => {
+    cancelledRef.current = true;
+    cancelNer();
+  }, []);
+
+  const reset = useCallback(() => {
+    secretRef.current = null;
+    setState(INITIAL);
+  }, []);
+
+  return { state, analyse, cancel, decide, decideAll, setReadable, release, downloadZip, downloadKey, reset };
 }

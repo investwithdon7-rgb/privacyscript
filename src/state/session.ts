@@ -16,6 +16,9 @@ import type { AuditLog } from '@/engine/output';
 import type { SessionSecret } from '@/engine/crypto';
 import type { DocxOutputFormat } from '@/formats/docx';
 import type { ScanProgress } from '@/formats/pdf-scanned';
+import type { TabularState } from '@/engine/tabular';
+import type { TranscriptState } from '@/engine/transcript';
+import type { ScriptWarning } from '@/engine/script-coverage';
 import type {
   ComplianceJurisdiction,
   ComplianceReport,
@@ -66,6 +69,16 @@ export interface SessionState {
   docxFormat: DocxOutputFormat;
   /** Live scanned-PDF OCR progress (PDF_SCANNED ingest only). */
   scanProgress: ScanProgress | null;
+  /** Survey / spreadsheet column plan (CSV + XLSX only). */
+  tabular: TabularState | null;
+  /** Interview / focus-group transcript structure and review (text + DOCX). */
+  transcript: TranscriptState | null;
+  /** Set when part or all of the text is in a script the engine cannot read. */
+  scriptWarning: ScriptWarning | null;
+  /** Live progress of the background name detection (null when idle). */
+  nerProgress: { phase: 'detect' | 'validate'; done: number; total: number } | null;
+  /** User confirmed they will review the unreadable passages themselves (PARTIAL only). */
+  scriptAcknowledged: boolean;
   /** Progress within the 6 pipeline stages, 0–6. */
   stageIndex: number;
   /** True once user has confirmed quasi-identifier handling on screen 2. */
@@ -99,6 +112,11 @@ const INITIAL: SessionState = {
   sourceBytes: null,
   docxFormat: 'DOCX',
   scanProgress: null,
+  tabular: null,
+  transcript: null,
+  scriptWarning: null,
+  scriptAcknowledged: false,
+  nerProgress: null,
   stageIndex: 0,
   quasiConfirmed: false,
   error: null,

@@ -1,9 +1,9 @@
 'use client';
 
 import { detect, type Span } from '@/engine/detect';
-import { runClinicalNER } from '@/engine/ner';
+import { NerCancelledError, runClinicalNER } from '@/engine/ner';
 import { replaceSpans, type ReplacementResult } from '@/engine/replace';
-import { assessRisk } from '@/engine/risk';
+import { assessRisk, type RiskAssessment } from '@/engine/risk';
 import { validate } from '@/engine/validate';
 import { buildAuditLog } from '@/engine/output';
 import { detectFormat, readFileAsText, type RecordFormat } from '@/engine/ingest';
@@ -26,6 +26,30 @@ import {
   type ComplianceJurisdiction,
 } from '@/engine/compliance';
 import { getSession, updateSession } from '@/state/session';
+import { assessScriptCoverage } from '@/engine/script-coverage';
+import {
+  analyseTranscript,
+  contextualFlags,
+  detectTranscript,
+  nameMentionSpans,
+  passageSpan,
+  transcriptLabeller,
+  type TranscriptState,
+} from '@/engine/transcript';
+import {
+  applyPlans,
+  detectPlatform,
+  GENERALISER_LABELS,
+  ROLE_LABELS,
+  displayName,
+  measureRisk,
+  questionRow,
+  suggestPlans,
+  usesEngineOutput,
+  type ApplyResult,
+  type TabularRisk,
+  type TabularState,
+} from '@/engine/tabular';
 
 /**
  * Non-printable U+001F UNIT SEPARATOR. Used as the leaf delimiter when we
@@ -169,10 +193,23 @@ export async function ingestAndDetect(file: File): Promise<void> {
         break;
       }
       case 'CSV': {
-        const raw = await readFileAsText(file);
+        const ext = file.name.split('.').pop()?.toLowerCase();
+        // SPSS variable labels act as question text for column suggestions.
+        let questions: Record<string, string> = {};
+        let raw: string;
+        if (ext === 'xlsx') {
+          raw = await (await import('@/formats/xlsx')).xlsxToCsv(await file.arrayBuffer());
+        } else if (ext === 'sav') {
+          const sav = (await import('@/formats/sav')).readSav(await file.arrayBuffer());
+          raw = sav.csv;
+          questions = sav.labels;
+        } else {
+          raw = await readFileAsText(file);
+        }
         const { parseCsv, forcedLabelForCsvColumn } = await import('@/formats/csv');
         const csv = parseCsv(raw);
         parsedOriginal = csv;
+        updateSession({ tabular: buildTabularState(csv, getSession().mode ?? 'PSEUDONYMISE', questions) });
         text = csv.leaves.map((l) => l.value).join(LEAF_DELIM);
         forcedSpans = buildForcedSpans(
           csv.leaves.map((l) => l.value),
@@ -243,11 +280,33 @@ export async function ingestAndDetect(file: File): Promise<void> {
       stageIndex: 1,
     });
 
+    // Interview / focus-group transcripts (plain text, captions, Word).
+    const transcriptInfo =
+      effectiveFormat === 'TEXT' || effectiveFormat === 'DOCX' ? analyseTranscript(text) : null;
+
     // Stage 2: DETECT
     // Forced spans (structural PII from FHIR paths / HL7 fields / CSV headers)
     // carry confidence 1, so they always land in the auto-accepted bucket.
-    const nerSpans = await runClinicalNER(text);
-    const detection = detect(text, [...nerSpans, ...forcedSpans]);
+    // The model reads only what people wrote or said: caption timings, cue
+    // IDs and speaker labels are masked (speakers are handled by rules).
+    const nerSpans = await runClinicalNER(text, {
+      skip: transcriptInfo ? [...transcriptInfo.structuralSpans, ...transcriptInfo.labelSpans] : [],
+      onProgress: (done, total) => updateSession({ nerProgress: { phase: 'detect', done, total } }),
+    });
+    updateSession({ nerProgress: null });
+    const detection = transcriptInfo
+      ? detectTranscript(text, transcriptInfo, nerSpans, forcedSpans)
+      : detect(text, [...nerSpans, ...forcedSpans]);
+    let transcript: TranscriptState | null = null;
+    if (transcriptInfo) {
+      transcript = {
+        info: transcriptInfo,
+        readable: true,
+        flags: contextualFlags(text, transcriptInfo),
+        flagDecisions: {},
+        confirmed: false,
+      };
+    }
 
     // Default-on suppression for quasi-identifiers.
     const autoRedact = new Set<string>();
@@ -267,13 +326,22 @@ export async function ingestAndDetect(file: File): Promise<void> {
       }
     }
 
+    // The detectors are Latin-script only: text they cannot read yields no
+    // spans and would look clean. Flag it so output is never emitted silently.
+    const scriptWarning = assessScriptCoverage(text);
+
     updateSession({
       detection,
+      transcript,
+      scriptWarning,
+      scriptAcknowledged: false,
       quasiToRedact: autoRedact,
       stageIndex: 2,
     });
   } catch (err) {
-    updateSession({ error: (err as Error).message });
+    // A cancelled run is not an error; the page that cancelled resets itself.
+    if (err instanceof NerCancelledError) return;
+    updateSession({ error: (err as Error).message, nerProgress: null });
   }
 }
 
@@ -294,6 +362,10 @@ export async function runComplianceCheck(
     parsedOriginal: null,
     sourceBytes: null,
     scanProgress: null,
+    tabular: null,
+    transcript: null,
+    scriptWarning: null,
+    scriptAcknowledged: false,
     quasiConfirmed: false,
     quasiToRedact: new Set(),
     uncertainSpanDecisions: {},
@@ -351,9 +423,21 @@ export async function startDeidentificationFromCompliance(
     }
   }
 
+  // Column suggestions depend on the mode (e.g. date shifting is only offered
+  // when pseudonymising), so re-suggest now that the mode is known.
+  const tabular =
+    s.format === 'CSV' && s.parsedOriginal
+      ? buildTabularState(
+          s.parsedOriginal as CsvIngest,
+          mode,
+          Object.fromEntries((s.tabular?.plans ?? []).filter((p) => p.question).map((p) => [p.column, p.question!]))
+        )
+      : s.tabular;
+
   updateSession({
     mode,
     complianceProfile,
+    tabular,
     quasiToRedact,
     quasiConfirmed: false,
     replacement: null,
@@ -364,6 +448,67 @@ export async function startDeidentificationFromCompliance(
     deidentifiedBytes: null,
     stageIndex: 2,
     error: null,
+  });
+}
+
+/** Data rows of a parsed CSV, i.e. without platform header/meta rows. */
+export function tabularDataRows(csv: CsvIngest, tabular: TabularState): Record<string, string>[] {
+  return csv.rows.slice(tabular.platform.metaRowCount);
+}
+
+function buildTabularState(
+  csv: CsvIngest,
+  mode: Mode,
+  /** Extra question text per column (e.g. SPSS variable labels). */
+  questions: Record<string, string> = {}
+): TabularState {
+  const platform = detectPlatform(csv.headers, csv.rows);
+  const dataRows = csv.rows.slice(platform.metaRowCount);
+  return {
+    platform,
+    plans: suggestPlans(csv.headers, dataRows, mode, { ...questionRow(platform, csv.rows), ...questions }),
+    suppressedRows: [],
+    fixNotes: [],
+    confirmed: false,
+  };
+}
+
+/** Map an offset in the LEAF_DELIM-joined text to its CSV leaf index. */
+function leafIndexFinder(leaves: CsvLeaf[]): (pos: number) => number {
+  const starts: number[] = [];
+  let offset = 0;
+  for (const l of leaves) {
+    starts.push(offset);
+    offset += l.value.length + LEAF_DELIM.length;
+  }
+  return (pos) => {
+    let lo = 0, hi = starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (starts[mid] <= pos) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  };
+}
+
+/**
+ * For a tabular run: keep only spans that fall in columns whose output comes
+ * from the span engine. Spans inside identifier / quasi columns are handled
+ * by the column plan and would otherwise be double-reported.
+ */
+export function spansInEngineColumns<T extends { start: number }>(spans: T[]): T[] {
+  const s = getSession();
+  if (s.format !== 'CSV' || !s.tabular || !s.parsedOriginal) return spans;
+  const csv = s.parsedOriginal as CsvIngest;
+  const find = leafIndexFinder(csv.leaves);
+  const planBy = new Map(s.tabular.plans.map((p) => [p.column, p]));
+  const meta = s.tabular.platform.metaRowCount;
+  return spans.filter((sp) => {
+    const leaf = csv.leaves[find(sp.start)];
+    if (!leaf || leaf.row < meta) return true;
+    const plan = planBy.get(leaf.column);
+    return !plan || usesEngineOutput(plan);
   });
 }
 
@@ -388,7 +533,7 @@ function detectInitialFormat(file: File): RecordFormat {
   if (ext === 'pdf') return 'PDF_TYPED';
   if (ext === 'docx') return 'DOCX';
   if (ext === 'hl7') return 'HL7_V2';
-  if (ext === 'csv' || ext === 'tsv') return 'CSV';
+  if (ext === 'csv' || ext === 'tsv' || ext === 'xlsx' || ext === 'sav') return 'CSV';
   // JSON and TXT/unknown: return TEXT as a placeholder; confirmFormat will
   // upgrade to FHIR_R4 or HL7_V2 after reading the content preview.
   return 'TEXT';
@@ -410,6 +555,12 @@ async function confirmFormat(file: File, initial: RecordFormat): Promise<RecordF
 export async function finalise(): Promise<void> {
   const s = getSession();
   if (!s.detection || s.originalText === null || !s.mode) return;
+
+  if (s.scriptWarning?.severity === 'UNREADABLE') {
+    updateSession({ error: s.scriptWarning.message });
+    return;
+  }
+  if (s.scriptWarning?.severity === 'PARTIAL' && !s.scriptAcknowledged) return;
 
   try {
     updateSession({ error: null, stageIndex: 2 });
@@ -436,7 +587,31 @@ export async function finalise(): Promise<void> {
     );
 
     // 3. Merge in spans the user manually drew in the span editor.
-    const allSpans = [...activeSpans, ...s.userAddedSpans, ...confirmedUncertain];
+    // 4. Transcript passages the user chose to remove.
+    const tr = s.transcript;
+    const removedFlags = tr ? tr.flags.filter((f) => tr.flagDecisions[f.id] === 'remove') : [];
+    const passageSpans = removedFlags.map((f) => passageSpan(s.originalText!, f));
+
+    // 5. Transcripts: a name the user confirmed (from the uncertain list or by
+    //    marking it) is replaced at every mention, not just the one reviewed.
+    const confirmedNameSpans = tr
+      ? nameMentionSpans(
+          s.originalText,
+          [...confirmedUncertain, ...s.userAddedSpans]
+            .filter((sp) => sp.label === 'NAME')
+            .map((sp) => s.originalText!.slice(sp.start, sp.end)),
+          tr.info,
+          [...activeSpans, ...activeQuasi, ...s.userAddedSpans, ...confirmedUncertain, ...passageSpans]
+        )
+      : [];
+
+    const allSpans = [
+      ...activeSpans,
+      ...s.userAddedSpans,
+      ...confirmedUncertain,
+      ...passageSpans,
+      ...confirmedNameSpans,
+    ];
 
     const replacement = await replaceSpans(
       s.originalText,
@@ -446,37 +621,124 @@ export async function finalise(): Promise<void> {
         mode: s.mode,
         secret: secret ?? undefined,
         quasiToRedact: s.quasiToRedact,
+        labeller: tr
+          ? transcriptLabeller(tr.info, tr.readable, removedFlags.map((f) => f.text))
+          : undefined,
       }
     );
-    updateSession({ replacement, stageIndex: 3 });
+    const { COMPLIANCE_PROFILES } = await import('@/lib/constants');
+    const profile = COMPLIANCE_PROFILES[s.complianceProfile ?? 'GDPR_PSEUDO'];
+    const kThreshold = profile?.kThreshold ?? K_ANONYMITY_THRESHOLD;
+
+    // Survey / spreadsheet runs: apply the confirmed column plan on top of
+    // the span engine's per-cell output.
+    const tab = s.format === 'CSV' && s.tabular ? s.tabular : null;
+    let tabularOut: Awaited<ReturnType<typeof applyPlans>> | null = null;
+    let finalReplacement = replacement;
+    if (tab) {
+      const csv = s.parsedOriginal as CsvIngest;
+      const parts = replacement.text.split(LEAF_DELIM);
+      const engineRows = csv.rows.map((r) => ({ ...r }));
+      csv.leaves.forEach((leaf, i) => {
+        engineRows[leaf.row][leaf.column] = parts[i] ?? leaf.value;
+      });
+      tabularOut = await applyPlans({
+        headers: csv.headers,
+        originalRows: csv.rows,
+        engineRows,
+        metaRowCount: tab.platform.metaRowCount,
+        plans: tab.plans,
+        suppressedRows: tab.suppressedRows,
+        mode: s.mode,
+        secret: secret ?? undefined,
+        kThreshold,
+        dateShiftDays: replacement.dateShiftDays,
+      });
+      // DIRECT-column pseudonyms belong in the re-identification key too.
+      finalReplacement = {
+        ...replacement,
+        mapping: { ...replacement.mapping, ...tabularOut.mapping },
+      };
+    }
+    updateSession({ replacement: finalReplacement, stageIndex: 3 });
 
     // Stage 4: RISK
     const retainedQuasi = activeQuasi.filter(
       (q) => !s.quasiToRedact.has(q.label)
     );
-    const { COMPLIANCE_PROFILES } = await import('@/lib/constants');
-    const profile = COMPLIANCE_PROFILES[s.complianceProfile ?? 'GDPR_PSEUDO'];
-    const risk = assessRisk({
+    let risk = assessRisk({
       detectedSpans: s.detection.spans,
-      retainedQuasiSpans: retainedQuasi,
+      // In a survey, quasi spans inside identifier/quasi columns are governed
+      // by the column plan; only free-text mentions feed the heuristic.
+      retainedQuasiSpans: tab ? spansInEngineColumns(retainedQuasi) : retainedQuasi,
       recordCount: 1,
-      kThreshold: profile?.kThreshold,
+      kThreshold,
     });
+    if (tab && tabularOut) {
+      const csv = s.parsedOriginal as CsvIngest;
+      risk = mergeTabularRisk(
+        risk,
+        measureRisk(tabularDataRows(csv, tab), tab.plans, kThreshold, tab.suppressedRows),
+        tab,
+        kThreshold,
+        s.mode
+      );
+    }
     updateSession({ risk, stageIndex: 4 });
 
     // Stage 5: VALIDATE
-    const validation = await validate(replacement.text, {
+    let validationText = replacement.text;
+    let originalIdentifiers = Object.keys(replacement.mapping);
+    if (tab && tabularOut) {
+      // Quasi columns hold deliberately kept / generalised values (governed by
+      // k-anonymity above), so the verbatim leak check runs on every other
+      // column. Direct-identifier originals are checked there too.
+      const planBy = new Map(tab.plans.map((p) => [p.column, p]));
+      const checked = tabularOut.headers.filter((h) => planBy.get(h)?.role !== 'QUASI');
+      validationText = tabularOut.rows
+        .flatMap((r) => checked.map((h) => r[h] ?? ''))
+        .filter(Boolean)
+        .join(LEAF_DELIM);
+      const inEngineCols = new Set(
+        spansInEngineColumns(replacement.replacements.map((r) => ({ start: r.span.start, original: r.original })))
+          .map((r) => r.original)
+      );
+      const inPlanCols = new Set(
+        replacement.replacements.map((r) => r.original).filter((o) => !inEngineCols.has(o))
+      );
+      originalIdentifiers = [
+        ...Object.keys(replacement.mapping).filter((o) => !inPlanCols.has(o)),
+        ...tabularOut.directOriginals,
+      ];
+    }
+    // No second model pass over the output: it is the same model on almost
+    // the same text, so it repeats the first pass's answers and doubled the
+    // time for long transcripts. The warning it produced is derived directly
+    // instead: possible names from the first pass that the user chose to keep
+    // and that still appear in the output.
+    const validation = await validate(validationText, {
       mode: s.mode,
-      originalIdentifiers: Object.keys(replacement.mapping),
-      nerRunner: runClinicalNER,
+      originalIdentifiers: Array.from(new Set(originalIdentifiers)),
     });
+    validation.nerLeaks = keptPossibleNames(s, validationText);
     updateSession({ validation, stageIndex: 5 });
 
     // Stage 6: OUTPUT
-    const { textOutput, bytesOutput } = await reconstructOutput(
-      s.format!,
-      replacement
-    );
+    const { textOutput, bytesOutput } = tabularOut
+      ? {
+          textOutput: (await import('papaparse')).default.unparse(tabularOut.rows, {
+            columns: tabularOut.headers,
+          }),
+          bytesOutput: undefined,
+        }
+      : await reconstructOutput(s.format!, replacement);
+    const tabularNotes = tab && tabularOut ? tabularAuditNotes(tab, tabularOut) : [];
+    if (tr) tabularNotes.push(...transcriptAuditNotes(tr));
+    if (s.scriptWarning) {
+      tabularNotes.push(
+        `Unreadable script (${s.scriptWarning.scripts.join(', ') || 'non-Latin'}): ${Math.round(s.scriptWarning.unreadableRatio * 100)}% of letters could not be checked automatically. The user confirmed they reviewed those passages manually.`
+      );
+    }
     const outputSize = bytesOutput?.byteLength ?? textOutput?.length ?? 0;
     const audit = buildAuditLog({
       mode: s.mode,
@@ -488,9 +750,12 @@ export async function finalise(): Promise<void> {
       risk,
       validationPassed: validation.passed,
       complianceProfile: s.complianceProfile ?? 'GDPR_PSEUDO',
-      notes: validation.passed
-        ? undefined
-        : [`${validation.leaks.length} potential leak(s) detected — review before sharing.`],
+      notes: [
+        ...tabularNotes,
+        ...(validation.passed
+          ? []
+          : [`${validation.leaks.length} potential leak(s) detected — review before sharing.`]),
+      ],
     });
 
     updateSession({
@@ -502,6 +767,106 @@ export async function finalise(): Promise<void> {
   } catch (err) {
     updateSession({ error: (err as Error).message });
   }
+}
+
+/**
+ * Possible names (uncertain model detections) the user did not redact and
+ * that still appear in the output. Surfaced as warnings, never a block.
+ */
+function keptPossibleNames(s: ReturnType<typeof getSession>, output: string) {
+  const uncertain = s.detection?.uncertainSpans ?? [];
+  const kept = uncertain.filter(
+    (sp) =>
+      (sp.label === 'NAME' || sp.label === 'ADDRESS_LINE') &&
+      s.uncertainSpanDecisions[`${sp.start}:${sp.end}:${sp.label}`] !== true
+  );
+  const seen = new Set<string>();
+  return kept.filter((sp) => {
+    const word = sp.text.trim();
+    if (word.length < 3 || seen.has(word)) return false;
+    seen.add(word);
+    return new RegExp(`(?<![\\p{L}\\d])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\d])`, 'u').test(output);
+  });
+}
+
+/**
+ * Replace the single-record k-anonymity estimate with the empirical value
+ * measured across all survey responses (keeping the free-text heuristic as a
+ * floor), and describe each column decision in the breakdown table.
+ */
+function mergeTabularRisk(
+  base: RiskAssessment,
+  tabRisk: TabularRisk,
+  tab: TabularState,
+  kThreshold: number,
+  mode: Mode
+): RiskAssessment {
+  const k = Math.min(base.kAnonymity, isFinite(tabRisk.k) ? tabRisk.k : base.kAnonymity);
+  const reasons = base.reasons.filter((r) => r !== 'All quasi-identifiers suppressed or generalised.');
+  if (tabRisk.quasiColumns.length > 0) {
+    reasons.unshift(
+      `Measured across ${tabRisk.totalRows} responses: the smallest group sharing the same ${tabRisk.quasiColumns.join(', ')} has ${isFinite(tabRisk.k) ? tabRisk.k : tabRisk.totalRows} ${tabRisk.k === 1 ? 'person' : 'people'}.`
+    );
+  }
+  if (tabRisk.rowsAtRisk > 0) {
+    reasons.push(`${tabRisk.rowsAtRisk} responses are in groups smaller than ${kThreshold}.`);
+  }
+  if (tab.suppressedRows.length > 0) {
+    reasons.push(`Identifying details hidden for ${tab.suppressedRows.length} responses.`);
+  }
+  let l = base.lDiversity;
+  if (tabRisk.l !== null) {
+    l = tabRisk.l;
+    if (tabRisk.l < 2) {
+      reasons.push('In at least one group, everyone gave the same sensitive answer — it can be inferred about them.');
+    }
+  }
+  if (reasons.length === 0) reasons.push('No combination of kept columns singles anyone out.');
+
+  const breakdown = [...base.breakdown];
+  for (const p of tab.plans) {
+    if (p.role === 'DIRECT') {
+      breakdown.push({
+        label: `Column: ${displayName(p)}`,
+        count: tabRisk.totalRows,
+        action: mode === 'ANONYMISE' ? 'column removed' : 'replaced with codes',
+      });
+    } else if (p.role === 'QUASI') {
+      breakdown.push({
+        label: `Column: ${displayName(p)}`,
+        count: tabRisk.totalRows,
+        action: p.generaliser === 'suppress' ? 'column removed' : GENERALISER_LABELS[p.generaliser].toLowerCase(),
+      });
+    }
+  }
+
+  const level: RiskAssessment['level'] = k >= kThreshold ? 'LOW' : k >= 3 ? 'MEDIUM' : 'HIGH';
+  return { ...base, level, kAnonymity: k, lDiversity: l, reasons, breakdown };
+}
+
+function transcriptAuditNotes(tr: TranscriptState): string[] {
+  const decisions = Object.values(tr.flagDecisions);
+  const named = tr.info.speakers.filter((sp) => sp.isName).length;
+  return [
+    `Source recognised as: ${tr.info.kindLabel} (${tr.info.speakers.length} speakers, ${tr.info.turnCount} turns).`,
+    `Speaker names replaced with role labels: ${named}.`,
+    `Replacement style: ${tr.readable ? 'readable labels ([Person 1])' : 'codes'}.`,
+    `Passages flagged for possible identification by context: ${tr.flags.length}; reviewed by user: removed ${decisions.filter((d) => d === 'remove').length}, kept ${decisions.filter((d) => d === 'keep').length}.`,
+  ];
+}
+
+function tabularAuditNotes(tab: TabularState, out: ApplyResult): string[] {
+  const notes = [`Source recognised as: ${tab.platform.label}.`];
+  if (out.removedColumns.length) notes.push(`Columns removed: ${out.removedColumns.length}.`);
+  notes.push(`Cells generalised: ${out.generalisedCells}.`);
+  if (tab.suppressedRows.length) notes.push(`Responses with identifying details hidden: ${tab.suppressedRows.length}.`);
+  // Column names only — never values.
+  for (const p of tab.plans) {
+    if (p.role === 'DIRECT' || p.role === 'QUASI') {
+      notes.push(`Column “${p.column}”: ${ROLE_LABELS[p.role]} → ${p.role === 'QUASI' ? GENERALISER_LABELS[p.generaliser] : 'removed or coded'}.`);
+    }
+  }
+  return notes;
 }
 
 interface ReconstructOutput {
@@ -628,6 +993,8 @@ export async function rerenderDocxOutput(): Promise<void> {
 export function canEmitOutput(): boolean {
   const s = getSession();
   if (!s.risk || !s.validation) return false;
+  if (s.scriptWarning?.severity === 'UNREADABLE') return false;
+  if (s.scriptWarning?.severity === 'PARTIAL' && !s.scriptAcknowledged) return false;
   if (!s.validation.passed) return false;
   if (s.risk.kAnonymity < K_ANONYMITY_THRESHOLD && s.mode === 'ANONYMISE') return false;
   return true;

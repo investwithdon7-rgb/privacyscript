@@ -187,7 +187,53 @@ Every record goes through these stages in order. Each stage is independently log
 | Scanned PDF (image) | Tesseract.js OCR → process → overlay | v1 with optimisation (see below) | v1 |
 | DOCX | mammoth.js → text → process → reassemble OR export to MD/HTML | User chooses output format | v1 |
 | HL7 FHIR XML | xml2js + FHIR logic | v2 | |
-| CSV (structured records) | Papa Parse | Column-level replacement | v2 |
+| CSV (records + survey exports) | Papa Parse | Column plan + span engine, see Survey datasets | v1 |
+| XLSX (survey exports) | jszip (first worksheet) | Output as CSV | v1 |
+| SPSS .sav | Custom reader (uncompressed + bytecode; not .zsav) | Output as CSV, codes kept; variable labels guide column roles | v1 |
+
+### Survey datasets (CSV / XLSX) — `src/engine/tabular.ts`
+
+Each row is a person, so risk is measured across rows, not per record.
+
+- **Platform recognition**: Qualtrics (2 meta header rows; question text used for
+  classification), REDCap, SurveyMonkey (1 meta row), Microsoft Forms. Platform
+  metadata (IP address, GPS, recipient name/email, response IDs) is pre-marked.
+- **Column roles**: Identifies a person (anonymise: column removed; pseudonymise:
+  HMAC code, added to the key file) · Could identify in combination (generalised:
+  age bands, month/year, postcode district/area, rare answers → Other, date shift
+  in pseudonymise only) · Sensitive (l-diversity) · Written answer · Safe answer.
+  Every cell still goes through the span engine as a safety net.
+- **Risk**: empirical k-anonymity and l-diversity across rows, live in the UI.
+  "Fix automatically" escalates generalisation greedily, then hides quasi values
+  (`*`) for up to 10% of rows. It never removes a column without the user.
+- Anonymise mode cannot continue past the column step while k < threshold.
+
+### Interview transcripts (TXT / DOCX / VTT / SRT) — `src/engine/transcript.ts`
+
+- **Structure**: WebVTT voice tags, SRT, Teams/Otter "Name   0:03" headers, "Name:" lines,
+  Zoom/Teams chat logs ("10:02:33 From X to Y:"; direct-message recipients are names too).
+  Timestamps, cue IDs and the WEBVTT header are excluded from detection; .vtt/.srt
+  download in their own format.
+- **Speakers**: real-name labels → "[Interviewer]" / "[Participant n]" (editable) at
+  every mention, case-insensitively; generic labels (P01, Interviewer) kept.
+- **Readable labels** (default): "[Person n]", "[Organisation n]"… via the
+  `labeller` option of `replaceSpans`; partial names join the fuller name's number.
+- **Speech**: phone numbers read aloud, spoken dates, spoken ages over 89. Names
+  found once (model, or "my daughter Amira") are replaced at every mention.
+- **Context**: sentences that identify without a name are flagged; the user must
+  keep or remove each before continuing. Free text is never auto-declared anonymous.
+
+### Batch processing (studies) — `src/engine/batch.ts`
+
+- Scan all files → one review screen (study-wide speaker labels, every flagged
+  passage decided) → release. A shared label registry keeps "[Person 3]" the
+  same person in every file.
+- Each output is validated as released (DOCX: re-extracted from the rebuilt
+  file). Files failing the leak check, or anonymised with k < threshold, are
+  held back and excluded from the ZIP.
+- The re-identification key is one passphrase-encrypted file, downloaded
+  separately — never inside the ZIP.
+- Surveys, PDFs and DICOM are skipped with a reason (they need their own review).
 
 ### Scanned PDF optimisation strategy
 
@@ -239,9 +285,24 @@ duration, frequency, therapeutic procedure, diagnostic procedure, and more.
 
 Exported to ONNX for Transformers.js. Quantised to INT8 to keep bundle under ~120MB.
 
-**Generic entity fallback**: `Xenova/bert-base-NER` for PER / LOC / ORG entities the
-clinical model may miss. Run both, union the results, deduplicate overlapping spans
-(longest match wins, clinical model takes priority on ties).
+**Generic entity model (what actually runs today)**:
+`Xenova/distilbert-base-multilingual-cased-ner-hrl` (~135 MB, quantised) for PER / LOC /
+ORG in English, Dutch, German, Spanish, French, Italian, Portuguese and more. It replaced
+the English-only `Xenova/bert-base-NER`, which mis-tagged ordinary Spanish words as names.
+Its DATE label is ignored (exact dates come from rules). The clinical model above is
+still not converted/hosted.
+
+**Runs in a Web Worker** (`src/workers/ner.worker.ts`): the page never freezes, progress is
+reported per chunk and runs can be cancelled. Implementation notes that matter:
+- transformers.js v2 returns entity `start`/`end` as null; offsets are rebuilt from token
+  indices (`wordPieceOffsets`). Never trust the library's offsets.
+- Chunks are sized by real token count (`fitToModel`, ≤ 500 tokens): caption timing
+  lines are ~20 tokens each and silently overflowed the 512-token window.
+- Transcripts mask timings, cue IDs and speaker labels before the model reads them.
+- No second model pass during validation (same model, same answers); kept "possible
+  names" still in the output are reported instead.
+- Transcripts add a language-independent safety net: mid-sentence capitalised words
+  never used in lower case are offered once each as possible names.
 
 **Model loading strategy**:
 - Lazy-load on first use. Show download progress (this will be the first-load bottleneck).
@@ -326,6 +387,9 @@ The key file download is the only persistence mechanism. The user owns it entire
 | Age suppression | HIPAA §164.514(b)(2)(i) | Ages > 89 always rendered as "90+" |
 | No data processor relationship | GDPR Article 28 | Client-side only; no DPA required between user and tool |
 | Supply chain security | NIS2 Article 21 | Open source; no third-party API calls; auditable pipeline |
+| Research ethics / data management plan | REC / IRB conditions; funder DMP requirements | Audit log per file and batch summary record what was changed (no identifiers); user decisions on context-flagged transcript passages are logged. Supports, does not replace, the approving body's review |
+| Unreadable scripts | Accuracy of any "safe" claim | Detectors are Latin-script only. Mostly non-Latin text: Check says "Cannot be checked" and de-identify/batch produce no output. Partly non-Latin: single-file needs user acknowledgement (audit-logged); batch holds the file back |
+| Anonymisation of free text | GDPR Recital 26; UK ICO "motivated intruder" test | Transcripts require a person to keep/remove each flagged passage; output guidance prompts a final motivated-intruder read. Never auto-declared anonymous |
 
 ---
 

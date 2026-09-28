@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { aggregateEntities, rawNerToSpans } from '@/engine/ner';
+import { aggregateEntities, rawNerToSpans, wordPieceOffsets, withOffsets, fitToModel, type PositionedNer } from '@/engine/ner';
 
 /**
  * Regression tests for NER post-processing.
@@ -101,5 +101,64 @@ describe('rawNerToSpans', () => {
     const spans = rawNerToSpans(tokens, text, 100);
     expect(spans[0].start).toBe(103);
     expect(spans[0].end).toBe(111);
+  });
+});
+
+describe('offsets when the pipeline reports start/end as null (transformers.js v2)', () => {
+  const text = 'Another test with Alicia and Bruno.';
+  // What bert-base-NER's tokenizer yields for this text.
+  const tokens = ['[CLS]', 'Another', 'test', 'with', 'Ali', '##ci', '##a', 'and', 'Bruno', '.', '[SEP]'];
+
+  it('aligns WordPiece tokens to character offsets', () => {
+    const o = wordPieceOffsets(tokens, text);
+    expect(o[0]).toBeNull();
+    expect(text.slice(...(o[4] as [number, number]))).toBe('Ali');
+    expect(text.slice(...(o[6] as [number, number]))).toBe('a');
+    expect(text.slice(...(o[8] as [number, number]))).toBe('Bruno');
+  });
+
+  it('puts names on the right words instead of the first word of the chunk', () => {
+    const raw = [
+      { entity: 'B-PER', word: 'Ali', index: 4, start: null, end: null, score: 0.99 },
+      { entity: 'I-PER', word: '##ci', index: 5, start: null, end: null, score: 0.99 },
+      { entity: 'I-PER', word: '##a', index: 6, start: null, end: null, score: 0.99 },
+      { entity: 'B-PER', word: 'Bruno', index: 8, start: null, end: null, score: 0.99 },
+    ];
+    const positioned = withOffsets(raw, wordPieceOffsets(tokens, text)) as PositionedNer[];
+    const names = rawNerToSpans(positioned, text, 0).map((s) => s.text);
+    expect(names).toEqual(['Alicia', 'Bruno']);
+  });
+
+  it('drops an entity it cannot place rather than guessing', () => {
+    const raw = [{ entity: 'B-PER', word: 'X', index: 99, start: null, end: null, score: 0.99 }];
+    expect(withOffsets(raw, wordPieceOffsets(tokens, text))).toHaveLength(0);
+  });
+});
+
+describe('offset alignment recovers after a token it cannot match', () => {
+  it('keeps aligning later tokens when a symbol was rewritten by the tokenizer', () => {
+    const text = 'We tried… then Alicia joined.';
+    // Suppose the tokenizer rewrote "…" as "...": that token will not match.
+    const tokens = ['[CLS]', 'We', 'tried', '...', 'then', 'Alicia', 'joined', '.', '[SEP]'];
+    const o = wordPieceOffsets(tokens, text);
+    expect(o[3]).toBeNull();
+    expect(text.slice(...(o[5] as [number, number]))).toBe('Alicia');
+  });
+});
+
+describe('fitToModel', () => {
+  // Fake tokenizer: one token per whitespace-separated word.
+  const tokenizer = Object.assign(
+    (t: string) => ({ input_ids: { data: t.split(/\s+/).filter(Boolean) as unknown as number[] } }),
+    { model: { convert_ids_to_tokens: (ids: number[]) => ids.map(String) } }
+  );
+
+  it('splits a chunk until every piece fits the token window, keeping offsets', () => {
+    const text = Array.from({ length: 1200 }, (_, i) => `w${i}`).join(' ');
+    const pieces = fitToModel({ tokenizer }, { text, offset: 100 });
+    expect(pieces.length).toBeGreaterThan(2);
+    for (const p of pieces) expect(p.text.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(500);
+    expect(pieces.map((p) => p.text).join('')).toBe(text);
+    expect(pieces[1].offset).toBe(100 + pieces[0].text.length);
   });
 });

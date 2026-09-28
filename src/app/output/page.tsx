@@ -83,6 +83,32 @@ export default function OutputPage() {
             What can I do with this output?
           </summary>
           <div className="mt-4 text-sm text-[color:var(--color-muted)] space-y-3">
+            {(s.transcript || s.tabular) && (
+              <div className="surface-2 rounded-xl p-4 space-y-2">
+                <p className="text-white font-semibold">For research use</p>
+                {s.transcript && (
+                  <p>
+                    You decided on {s.transcript.flags.length} flagged passage
+                    {s.transcript.flags.length === 1 ? '' : 's'}. Automated checks cannot promise a
+                    conversation is anonymous, so read the output once more and ask whether someone
+                    who knows the participant (a colleague, a relative) could recognise them. The UK
+                    ICO calls this the &ldquo;motivated intruder&rdquo; test.
+                  </p>
+                )}
+                {s.tabular && s.risk && (
+                  <p>
+                    Re-identification risk was measured across all responses (k = {s.risk.kAnonymity};
+                    see the risk report). If you later join this file with other data, run it
+                    through again: new columns can make people unique.
+                  </p>
+                )}
+                <p>
+                  Check that your ethics approval (REC / IRB) and data management plan cover
+                  sharing this output, especially with an AI tool. Keep the audit log with your
+                  study records: it shows what was changed and contains no identifiers.
+                </p>
+              </div>
+            )}
             {s.mode === 'PSEUDONYMISE' ? (
               <>
                 <p>
@@ -94,6 +120,11 @@ export default function OutputPage() {
                 <p>
                   Do <em>not</em> share this output with an AI tool covered by a no-PHI policy. For
                   that, run the source through the tool again in Anonymise mode.
+                </p>
+                <p>
+                  Store the key file apart from the data, with access limited to the named key
+                  holder in your data management plan. Anyone with the key and the passphrase can
+                  reverse the codes.
                 </p>
               </>
             ) : (

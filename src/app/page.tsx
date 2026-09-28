@@ -48,9 +48,10 @@ export default function LandingPage() {
           <span style={{ color: '#4F46E5' }}>In your browser.</span> Nothing leaves your device.
         </h1>
         <p className="text-[color:var(--color-muted)] mt-6 max-w-2xl text-lg leading-relaxed">
-          Find the personal and health information hidden in a record, and see whether it is
-          risky to share or paste into an AI tool. Then remove or mask it on your own device,
-          ready for GDPR, HIPAA, EHDS and research use.
+          Find the personal and health information hidden in a patient record, an interview
+          transcript or a survey dataset, and see whether it is risky to share or paste into an
+          AI tool. Then remove or mask it on your own device, ready for GDPR, HIPAA, EHDS and
+          research use.
         </p>
 
         <div className="mt-12 grid md:grid-cols-2 gap-4">
@@ -67,9 +68,9 @@ export default function LandingPage() {
             </div>
             <h2 className="text-2xl font-bold mt-3">Is this safe to share or upload to AI?</h2>
             <p className="text-sm text-[color:var(--color-muted)] mt-3 leading-relaxed">
-              See what sensitive information is hiding in a document, from names and dates to
-              medical record numbers and health details, and whether it is risky to share or
-              paste into an AI tool.
+              See what sensitive information is hiding in a document, transcript or survey, from
+              names and dates to medical record numbers and health details, and whether it is
+              risky to share or paste into an AI tool.
             </p>
           </button>
 
@@ -93,7 +94,11 @@ export default function LandingPage() {
         {activeJob === null ? (
           <div className="mt-8 surface rounded-xl px-5 py-4 text-sm text-[color:var(--color-muted)]">
             Choose where to begin. If you are not sure whether a document is safe to share,
-            start with Check.
+            start with Check. Working on a study with many interviews?{' '}
+            <a href="/privacyscript/batch/" className="underline hover:text-white">
+              Use batch processing
+            </a>{' '}
+            so each person gets the same label in every file.
           </div>
         ) : null}
 
@@ -157,7 +162,7 @@ export default function LandingPage() {
             Step 2. Upload or paste a record
           </h2>
           <DropZone
-            accept=".txt,.json,.hl7,.pdf,.docx,.csv,.tsv,.dcm,.dicom"
+            accept=".txt,.vtt,.srt,.json,.hl7,.pdf,.docx,.csv,.tsv,.xlsx,.sav,.dcm,.dicom"
             disabled={false}
             onFile={onFile}
           />
@@ -202,6 +207,9 @@ function Footer() {
         <div className="flex gap-4">
           <a href="/privacyscript/batch/" className="hover:text-white transition-colors">
             Batch processing
+          </a>
+          <a href="/privacyscript/key/" className="hover:text-white transition-colors">
+            Open a key file
           </a>
           <span>v0.2 · {new Date().getUTCFullYear()}</span>
         </div>
