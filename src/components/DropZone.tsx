@@ -106,7 +106,7 @@ export function DropZone({ accept, disabled, onFile }: DropZoneProps) {
             Drop a health record here, or click to browse
           </div>
           <div className="text-sm text-[color:var(--color-muted)] mb-4">
-            Plain text · FHIR R4 JSON · HL7 v2 · CSV · PDF · DOCX · DICOM (.dcm)
+            Plain text · FHIR R4 JSON · HL7 v2 · PDF · DOCX · DICOM (.dcm) · Surveys &amp; spreadsheets (CSV, XLSX: Qualtrics, REDCap, SurveyMonkey, MS Forms)
           </div>
           <div className="mono text-xs text-[color:var(--color-muted)] uppercase tracking-widest">
             Processing happens entirely on this device. Nothing is uploaded.

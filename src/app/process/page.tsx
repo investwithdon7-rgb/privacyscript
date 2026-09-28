@@ -1,15 +1,19 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { Brand } from '@/components/Brand';
 import { PipelineProgress } from '@/components/PipelineProgress';
 import { QuasiIdentifierReview } from '@/components/QuasiIdentifierReview';
 import { UncertainDetectionsPanel } from '@/components/UncertainDetectionsPanel';
 import { SpanEditor } from '@/components/SpanEditor';
+import { SurveyColumnsPanel } from '@/components/SurveyColumnsPanel';
 import { useSession } from '@/hooks/useSession';
 import { getSession, updateSession } from '@/state/session';
-import { finalise } from '@/hooks/useDeidentification';
+import { finalise, spansInEngineColumns, tabularDataRows } from '@/hooks/useDeidentification';
+import { COMPLIANCE_PROFILES, K_ANONYMITY_THRESHOLD } from '@/lib/constants';
+import type { CsvIngest } from '@/formats/csv';
+import type { TabularState } from '@/engine/tabular';
 import type { Span } from '@/engine/detect';
 
 export default function ProcessPage() {
@@ -82,24 +86,47 @@ export default function ProcessPage() {
     updateSession({ userDismissedSpanKeys: next });
   };
 
+  // ── Survey / spreadsheet column plan ──────────────────────────────────
+  const tabular = s.format === 'CSV' ? s.tabular : null;
+  const csv = tabular ? (s.parsedOriginal as CsvIngest | null) : null;
+  const dataRows = useMemo(
+    () => (csv && tabular ? tabularDataRows(csv, tabular) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [csv, tabular?.platform.metaRowCount]
+  );
+  const kThreshold =
+    COMPLIANCE_PROFILES[s.complianceProfile ?? 'GDPR_PSEUDO']?.kThreshold ?? K_ANONYMITY_THRESHOLD;
+  const columnsPending = !!tabular && !tabular.confirmed;
+  const setTabular = (next: TabularState) => updateSession({ tabular: next });
+
+  /** Column setup still open — later review steps wait for it. */
+  const setupPending = columnsPending;
+
+  // In a survey, detections inside identifier / quasi columns are handled by
+  // the column plan — only show the ones in written/answer columns.
+  const quasiForReview = s.detection
+    ? tabular ? spansInEngineColumns(s.detection.quasiSpans) : s.detection.quasiSpans
+    : [];
+  const uncertainForReview = s.detection?.uncertainSpans
+    ? tabular ? spansInEngineColumns(s.detection.uncertainSpans) : s.detection.uncertainSpans
+    : [];
+
   // All active detected spans (direct + quasi, minus dismissed, plus user-added).
   const allDetectedSpans = s.detection
     ? [...s.detection.spans, ...s.detection.quasiSpans, ...s.userAddedSpans]
     : [];
 
   // Has the user resolved all uncertain span decisions?
-  const uncertainResolved =
-    !s.detection?.uncertainSpans?.length ||
-    s.detection.uncertainSpans.every(
-      (sp) => s.uncertainSpanDecisions[`${sp.start}:${sp.end}:${sp.label}`] !== undefined
-    );
+  const uncertainResolved = uncertainForReview.every(
+    (sp) => s.uncertainSpanDecisions[`${sp.start}:${sp.end}:${sp.label}`] !== undefined
+  );
 
   return (
     <main className="min-h-screen max-w-5xl mx-auto px-6">
       <Brand subtitle="Processing" />
 
       <section className="mt-10">
-        <h1 className="text-3xl font-bold">Processing record</h1>
+        <h1 className="text-3xl font-bold">{tabular ? 'Processing survey data' : 'Processing record'}</h1>
         <p className="text-[color:var(--color-muted)] mt-2 mono text-sm">
           {s.filename ?? 'record'} · {s.format ?? 'detecting…'} · {s.mode}
         </p>
@@ -169,32 +196,89 @@ export default function ProcessPage() {
               </div>
             </div>
 
+            {/* Survey datasets: column plan comes first */}
+            {tabular && s.mode && (
+              columnsPending ? (
+                <SurveyColumnsPanel
+                  tabular={tabular}
+                  dataRows={dataRows}
+                  mode={s.mode}
+                  kThreshold={kThreshold}
+                  isXlsx={/\.xlsx$/i.test(s.filename ?? '')}
+                  onChange={setTabular}
+                  onConfirm={() => {
+                    // Nothing left to review in the written answers → go
+                    // straight on; an empty "0 found, confirm" step is noise.
+                    const nothingElse = quasiForReview.length === 0 && uncertainForReview.length === 0;
+                    updateSession({
+                      tabular: { ...tabular, confirmed: true },
+                      ...(nothingElse ? { quasiConfirmed: true } : {}),
+                    });
+                  }}
+                />
+              ) : (
+                <div className="surface rounded-2xl px-6 py-4 mt-8 flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-sm">
+                    <span style={{ color: 'var(--color-success)' }}>✓</span> Survey columns confirmed
+                    <span className="text-[color:var(--color-muted)]">
+                      {' '}· {tabular.plans.filter((p) => p.role === 'DIRECT').length} identifying ·{' '}
+                      {tabular.plans.filter((p) => p.role === 'QUASI').length} generalised
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => setTabular({ ...tabular, confirmed: false })}
+                  >
+                    Edit columns
+                  </button>
+                </div>
+              )
+            )}
+
             {/* Phase 1.2: Uncertain NER detections panel */}
-            {(s.detection.uncertainSpans?.length ?? 0) > 0 && (
+            {!setupPending && uncertainForReview.length > 0 && (
               <UncertainDetectionsPanel
-                spans={s.detection.uncertainSpans!}
+                spans={uncertainForReview}
                 decisions={s.uncertainSpanDecisions}
                 onDecide={handleUncertainDecide}
                 onConfirmAll={handleUncertainConfirmAll}
               />
             )}
 
-            {/* Phase 1.3: Manual span editor, only shown once the uncertain panel is resolved */}
-            {uncertainResolved && s.originalText && (
-              <SpanEditor
-                text={s.originalText}
-                spans={allDetectedSpans}
-                dismissedKeys={s.userDismissedSpanKeys}
-                onAddSpan={handleAddSpan}
-                onDismissSpan={handleDismissSpan}
-                onRestoreSpan={handleRestoreSpan}
-              />
+            {/* Phase 1.3: Manual span editor, only shown once the uncertain panel is resolved.
+                For surveys it is tucked away — the column plan is the main control. */}
+            {!setupPending && uncertainResolved && s.originalText && (
+              tabular ? (
+                <details className="surface rounded-2xl px-6 py-4 mt-8">
+                  <summary className="cursor-pointer text-sm font-semibold">
+                    Review individual detections in the cells (optional)
+                  </summary>
+                  <SpanEditor
+                    text={s.originalText}
+                    spans={allDetectedSpans}
+                    dismissedKeys={s.userDismissedSpanKeys}
+                    onAddSpan={handleAddSpan}
+                    onDismissSpan={handleDismissSpan}
+                    onRestoreSpan={handleRestoreSpan}
+                  />
+                </details>
+              ) : (
+                <SpanEditor
+                  text={s.originalText}
+                  spans={allDetectedSpans}
+                  dismissedKeys={s.userDismissedSpanKeys}
+                  onAddSpan={handleAddSpan}
+                  onDismissSpan={handleDismissSpan}
+                  onRestoreSpan={handleRestoreSpan}
+                />
+              )
             )}
 
             {/* Quasi-identifier review + confirm */}
-            {uncertainResolved && (
+            {!setupPending && uncertainResolved && (
               <QuasiIdentifierReview
-                quasiSpans={s.detection.quasiSpans}
+                quasiSpans={quasiForReview}
                 redactSet={s.quasiToRedact}
                 onToggle={toggleQuasi}
                 onConfirm={confirmQuasi}

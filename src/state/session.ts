@@ -16,6 +16,7 @@ import type { AuditLog } from '@/engine/output';
 import type { SessionSecret } from '@/engine/crypto';
 import type { DocxOutputFormat } from '@/formats/docx';
 import type { ScanProgress } from '@/formats/pdf-scanned';
+import type { TabularState } from '@/engine/tabular';
 import type {
   ComplianceJurisdiction,
   ComplianceReport,
@@ -66,6 +67,8 @@ export interface SessionState {
   docxFormat: DocxOutputFormat;
   /** Live scanned-PDF OCR progress (PDF_SCANNED ingest only). */
   scanProgress: ScanProgress | null;
+  /** Survey / spreadsheet column plan (CSV + XLSX only). */
+  tabular: TabularState | null;
   /** Progress within the 6 pipeline stages, 0–6. */
   stageIndex: number;
   /** True once user has confirmed quasi-identifier handling on screen 2. */
@@ -99,6 +102,7 @@ const INITIAL: SessionState = {
   sourceBytes: null,
   docxFormat: 'DOCX',
   scanProgress: null,
+  tabular: null,
   stageIndex: 0,
   quasiConfirmed: false,
   error: null,

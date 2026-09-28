@@ -187,7 +187,25 @@ Every record goes through these stages in order. Each stage is independently log
 | Scanned PDF (image) | Tesseract.js OCR → process → overlay | v1 with optimisation (see below) | v1 |
 | DOCX | mammoth.js → text → process → reassemble OR export to MD/HTML | User chooses output format | v1 |
 | HL7 FHIR XML | xml2js + FHIR logic | v2 | |
-| CSV (structured records) | Papa Parse | Column-level replacement | v2 |
+| CSV (records + survey exports) | Papa Parse | Column plan + span engine, see Survey datasets | v1 |
+| XLSX (survey exports) | jszip (first worksheet) | Output as CSV | v1 |
+
+### Survey datasets (CSV / XLSX) — `src/engine/tabular.ts`
+
+Each row is a person, so risk is measured across rows, not per record.
+
+- **Platform recognition**: Qualtrics (2 meta header rows; question text used for
+  classification), REDCap, SurveyMonkey (1 meta row), Microsoft Forms. Platform
+  metadata (IP address, GPS, recipient name/email, response IDs) is pre-marked.
+- **Column roles**: Identifies a person (anonymise: column removed; pseudonymise:
+  HMAC code, added to the key file) · Could identify in combination (generalised:
+  age bands, month/year, postcode district/area, rare answers → Other, date shift
+  in pseudonymise only) · Sensitive (l-diversity) · Written answer · Safe answer.
+  Every cell still goes through the span engine as a safety net.
+- **Risk**: empirical k-anonymity and l-diversity across rows, live in the UI.
+  "Fix automatically" escalates generalisation greedily, then hides quasi values
+  (`*`) for up to 10% of rows. It never removes a column without the user.
+- Anonymise mode cannot continue past the column step while k < threshold.
 
 ### Scanned PDF optimisation strategy
 

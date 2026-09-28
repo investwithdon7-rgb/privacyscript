@@ -79,6 +79,13 @@ const DATE_PATTERN =
 const PHONE_PATTERN =
   /(?<!\d)(?:\+\d{1,3}[\s\-\.]?)?(?:\(\d{2,4}\)[\s\-\.]?|\d{2,4}[\s\-\.])\d{2,4}[\s\-\.]?\d{2,4}(?:[\s\-\.]?\d{2,4})?(?!\d)/g;
 
+// UK numbers in their usual groupings — 07700 900123, 0113 496 0000,
+// 020 7946 0000, +44 (0)7700 900123. The generic pattern above misses the
+// 5+6 mobile grouping (its first group is at most 4 digits), which let the
+// US ZIP rule claim the first five digits and leak the rest.
+const UK_PHONE_PATTERN =
+  /(?<![\d+])(?:\+44\s?(?:\(0\)\s?)?|0)(?:\d{4}[\s\-.]?\d{6}|\d{3}[\s\-.]?\d{3}[\s\-.]?\d{4}|\d{2}[\s\-.]?\d{4}[\s\-.]?\d{4})(?!\d)/g;
+
 // Fax: only when explicitly labelled (otherwise indistinguishable from phone).
 const FAX_PATTERN =
   /\bfax(?:\s*(?:no|number|#))?\s*[:.\-]?\s*(?:\+\d{1,3}[\s\-\.]?)?(?:\(\d{2,4}\)[\s\-\.]?|\d{2,4}[\s\-\.])?\d{2,4}[\s\-\.]?\d{2,4}(?:[\s\-\.]?\d{2,4})?/gi;
@@ -320,6 +327,7 @@ export const IDENTIFIER_RULES: IdentifierRule[] = [
   { label: 'PASSPORT', category: 'EU', description: 'Passport number', pattern: PASSPORT_PATTERN, priority: 95 },
 
   { label: 'PHONE', category: 'HIPAA', description: 'Phone number', pattern: PHONE_PATTERN, priority: 70 },
+  { label: 'PHONE', category: 'EU', description: 'UK phone number', pattern: UK_PHONE_PATTERN, priority: 70 },
   { label: 'FAX', category: 'HIPAA', description: 'Fax number', pattern: FAX_PATTERN, priority: 75 },
 
   // Labelled-context identifiers

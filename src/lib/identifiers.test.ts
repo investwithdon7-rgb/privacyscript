@@ -242,3 +242,19 @@ describe('detect — quasi-identifier separation', () => {
     expect(r.find((s) => s.label === 'RARE_DISEASE_ICD')).toBeTruthy();
   });
 });
+
+describe('UK phone numbers', () => {
+  it.each([
+    'call me on 07700 900123',
+    'ring 0113 496 0000 today',
+    'office 020 7946 0000',
+    'mobile +44 (0)7700 900123',
+    'mobile +447700900123',
+  ])('redacts the whole number in "%s"', (text) => {
+    const { spans } = detect(text);
+    const digits = text.replace(/\D/g, '').length;
+    const phone = spans.find((s) => s.label === 'PHONE');
+    expect(phone).toBeTruthy();
+    expect(phone!.text.replace(/\D/g, '').length).toBe(digits);
+  });
+});
