@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 import { Brand } from '@/components/Brand';
+import { JourneySteps } from '@/components/JourneySteps';
 import { DiffViewer } from '@/components/DiffViewer';
 import { DownloadPanel } from '@/components/DownloadPanel';
 import { useSession } from '@/hooks/useSession';
@@ -48,7 +49,8 @@ export default function OutputPage() {
       <Brand subtitle="Output" />
 
       <section className="mt-10">
-        <div className="flex items-center justify-between flex-wrap gap-3">
+        <JourneySteps current="download" />
+        <div className="flex items-center justify-between flex-wrap gap-3 mt-8">
           <div>
             <h1 className="text-3xl font-bold">De-identified output ready</h1>
             <p className="text-[color:var(--color-muted)] mt-1 mono text-sm">

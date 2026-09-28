@@ -1,15 +1,16 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Brand } from '@/components/Brand';
-import { PipelineProgress } from '@/components/PipelineProgress';
+import { JourneySteps } from '@/components/JourneySteps';
+import { GuidedStep } from '@/components/GuidedStep';
 import { QuasiIdentifierReview } from '@/components/QuasiIdentifierReview';
 import { UncertainDetectionsPanel } from '@/components/UncertainDetectionsPanel';
 import { SpanEditor } from '@/components/SpanEditor';
 import { SurveyColumnsPanel } from '@/components/SurveyColumnsPanel';
 import { TranscriptPanel } from '@/components/TranscriptPanel';
-import { NerProgress } from '@/components/NerProgress';
+import { ScanStages } from '@/components/ScanStages';
 import { cancelNer } from '@/engine/ner';
 import type { TranscriptState } from '@/engine/transcript';
 import { useSession } from '@/hooks/useSession';
@@ -23,6 +24,8 @@ import type { Span } from '@/engine/detect';
 export default function ProcessPage() {
   const router = useRouter();
   const s = useSession();
+  // A finished review step the user chose to reopen with "Change".
+  const [reopened, setReopened] = useState<string | null>(null);
 
   // Redirect home if the user lands here without a staged file.
   useEffect(() => {
@@ -135,16 +138,204 @@ export default function ProcessPage() {
     (sp) => s.uncertainSpanDecisions[`${sp.start}:${sp.end}:${sp.label}`] !== undefined
   );
 
+  // ── Guided review: one step open at a time ────────────────────────────
+  interface StepDef {
+    id: string;
+    title: string;
+    whatToDo: string;
+    done: boolean;
+    summary?: string;
+    onChange?: () => void;
+    render: () => ReactNode;
+  }
+  const steps: StepDef[] = [];
+
+  if (scriptWarning) {
+    steps.push({
+      id: 'script',
+      title: scriptUnreadable ? 'This document cannot be checked' : 'Confirm the passages we cannot read',
+      whatToDo: scriptUnreadable
+        ? 'Nothing can be produced for this file. Start again with a different file.'
+        : 'Tick the box to confirm you will check those passages yourself.',
+      done: !scriptBlocked,
+      summary: 'You will check the unreadable passages yourself',
+      onChange: () => updateSession({ scriptAcknowledged: false }),
+      render: () => (
+        <div
+          className="rounded-2xl p-6"
+          style={{
+            background: scriptUnreadable ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.08)',
+            border: `1px solid ${scriptUnreadable ? 'var(--color-danger)' : 'var(--color-warning)'}`,
+          }}
+        >
+          <p className="text-sm">{scriptWarning.message}</p>
+          {scriptUnreadable ? (
+            <>
+              <p className="text-sm text-[color:var(--color-muted)] mt-2">
+                PrivacyScript reads Latin-script text only. It will not produce a de-identified
+                version: the result would look clean without being checked. De-identify this
+                document by hand, or with a tool that supports{' '}
+                {scriptWarning.scripts.join(', ') || 'this script'}.
+              </p>
+              <div className="mt-4">
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => {
+                    resetSession();
+                    router.push('/');
+                  }}
+                >
+                  Start again
+                </button>
+              </div>
+            </>
+          ) : (
+            <label className="flex items-start gap-3 mt-4 cursor-pointer text-sm">
+              <input
+                type="checkbox"
+                className="w-4 h-4 mt-0.5 accent-[#4F46E5]"
+                checked={s.scriptAcknowledged}
+                onChange={(e) => updateSession({ scriptAcknowledged: e.target.checked })}
+              />
+              <span>
+                I understand the {scriptWarning.scripts.join(', ') || 'non-Latin'} passages are not checked
+                automatically. I will mark any names or other identifiers in them myself in the
+                next steps, or confirm they contain none. This is recorded in the audit log.
+              </span>
+            </label>
+          )}
+        </div>
+      ),
+    });
+  }
+
+  if (transcript && s.mode) {
+    const mode = s.mode;
+    steps.push({
+      id: 'transcript',
+      title: 'Check speakers and sensitive passages',
+      whatToDo:
+        'Check how each speaker will be labelled, then choose Keep or Remove for each highlighted passage. Press "Confirm and continue" when done.',
+      done: !transcriptPending,
+      summary: `${transcript.info.speakers.filter((sp) => sp.isName).length} speaker names replaced · ${
+        Object.values(transcript.flagDecisions).filter((d) => d === 'remove').length
+      } passages removed`,
+      onChange: () => setTranscript({ ...transcript, confirmed: false }),
+      render: () => (
+        <TranscriptPanel
+          transcript={transcript}
+          mode={mode}
+          onChange={setTranscript}
+          onConfirm={() => updateSession({ transcript: { ...transcript, confirmed: true } })}
+        />
+      ),
+    });
+  }
+
+  if (tabular && s.mode) {
+    const mode = s.mode;
+    steps.push({
+      id: 'columns',
+      title: 'Check your survey columns',
+      whatToDo:
+        'Check what each column contains. If the box says people can still be singled out, press "Fix automatically". Then confirm.',
+      done: !columnsPending,
+      summary: `${tabular.plans.filter((p) => p.role === 'DIRECT').length} identifying columns · ${
+        tabular.plans.filter((p) => p.role === 'QUASI').length
+      } generalised`,
+      onChange: () => setTabular({ ...tabular, confirmed: false }),
+      render: () => (
+        <SurveyColumnsPanel
+          tabular={tabular}
+          dataRows={dataRows}
+          mode={mode}
+          kThreshold={kThreshold}
+          convertedFrom={
+            /\.xlsx$/i.test(s.filename ?? '') ? 'XLSX' : /\.sav$/i.test(s.filename ?? '') ? 'SPSS' : undefined
+          }
+          onChange={setTabular}
+          onConfirm={() => updateSession({ tabular: { ...tabular, confirmed: true } })}
+        />
+      ),
+    });
+  }
+
+  if (uncertainForReview.length > 0) {
+    const decided = uncertainForReview.map((sp) => s.uncertainSpanDecisions[`${sp.start}:${sp.end}:${sp.label}`]);
+    steps.push({
+      id: 'uncertain',
+      title: `Decide on ${uncertainForReview.length} possible name${uncertainForReview.length === 1 ? '' : 's'}`,
+      whatToDo:
+        'For each word, choose Redact if it could be a real person, place or organisation. Choose Keep if it is an ordinary word.',
+      done: uncertainResolved && reopened !== 'uncertain',
+      summary: `${decided.filter((d) => d === true).length} redacted · ${decided.filter((d) => d === false).length} kept`,
+      onChange: () => setReopened('uncertain'),
+      render: () => (
+        <UncertainDetectionsPanel
+          spans={uncertainForReview}
+          decisions={s.uncertainSpanDecisions}
+          onDecide={handleUncertainDecide}
+          onConfirmAll={() => {
+            handleUncertainConfirmAll();
+            setReopened(null);
+          }}
+        />
+      ),
+    });
+  }
+
+  steps.push({
+    id: 'finish',
+    title: 'Create your de-identified file',
+    whatToDo:
+      quasiForReview.length > 0
+        ? 'Choose which other details to hide, then press "Create de-identified file".'
+        : 'Everything is checked. Press "Create de-identified file".',
+    done: false,
+    render: () => (
+      <>
+        <QuasiIdentifierReview
+          quasiSpans={quasiForReview}
+          redactSet={s.quasiToRedact}
+          onToggle={toggleQuasi}
+          onConfirm={confirmQuasi}
+          confirmLabel="Create de-identified file →"
+        />
+        {s.originalText && (
+          <details className="surface rounded-2xl px-6 py-4 mt-4">
+            <summary className="cursor-pointer text-sm font-semibold">
+              Spotted something we missed? Mark it yourself (optional)
+            </summary>
+            <SpanEditor
+              text={s.originalText}
+              spans={allDetectedSpans}
+              dismissedKeys={s.userDismissedSpanKeys}
+              onAddSpan={handleAddSpan}
+              onDismissSpan={handleDismissSpan}
+              onRestoreSpan={handleRestoreSpan}
+            />
+          </details>
+        )}
+      </>
+    ),
+  });
+
+  const activeIndex = steps.findIndex((st) => !st.done);
+  const finalising = s.quasiConfirmed;
+
   return (
-    <main className="min-h-screen max-w-5xl mx-auto px-6">
+    <main className="min-h-screen max-w-5xl mx-auto px-6 pb-16">
       <Brand subtitle="Processing" />
 
       <section className="mt-10">
-        <h1 className="text-3xl font-bold">{tabular ? 'Processing survey data' : transcript ? 'Processing transcript' : 'Processing record'}</h1>
+        <h1 className="text-3xl font-bold">
+          {s.detection ? 'Review before we create your file' : tabular ? 'Scanning your survey' : transcript ? 'Scanning your transcript' : 'Scanning your document'}
+        </h1>
         <p className="text-[color:var(--color-muted)] mt-2 mono text-sm">
-          {s.filename ?? 'record'} · {s.format ?? 'detecting…'} · {s.mode}
+          {s.filename ?? 'document'} · {s.mode === 'ANONYMISE' ? 'Anonymise' : 'Pseudonymise'}
         </p>
-        <PipelineProgress stageIndex={s.stageIndex} />
+        <JourneySteps current={s.detection ? 'review' : 'scan'} />
 
         {s.error ? (
           <div
@@ -152,245 +343,64 @@ export default function ProcessPage() {
             style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid var(--color-danger)' }}
           >
             <div className="font-semibold mb-1" style={{ color: 'var(--color-danger)' }}>
-              Processing error
+              Something went wrong
             </div>
             <div className="text-sm">{s.error}</div>
           </div>
         ) : null}
 
-        {s.scanProgress && !s.detection ? (
-          <div className="surface rounded-2xl p-6 mt-8">
-            <div className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)] mb-2">
-              OCR progress
-            </div>
-            <div className="text-sm mb-4">{s.scanProgress.message}</div>
-            <div className="h-2 rounded-full surface-2 overflow-hidden">
-              <div
-                className="h-2"
-                style={{
-                  background: '#4F46E5',
-                  width: `${
-                    s.scanProgress.pagesTotal
-                      ? (s.scanProgress.pagesDone / s.scanProgress.pagesTotal) * 100
-                      : 0
-                  }%`,
-                }}
-              />
-            </div>
-            <div className="mono text-xs text-[color:var(--color-muted)] mt-2">
-              {s.scanProgress.pagesDone}/{s.scanProgress.pagesTotal} pages
-            </div>
-          </div>
-        ) : null}
-
         {s.detection ? (
           <>
-            {/* Detection summary */}
+            {/* What we found, in plain words */}
             <div className="mt-8 surface rounded-2xl p-6">
-              <div className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)] mb-2">
-                Detection summary
+              <div className="text-xl font-bold">
+                We found {s.detection.spans.length + s.detection.quasiSpans.length} things that could identify someone
               </div>
-              <div className="text-2xl font-bold">
-                {s.detection.spans.length + s.detection.quasiSpans.length} identifiers detected
-              </div>
-              {(s.detection.uncertainSpans?.length ?? 0) > 0 && (
-                <div className="mt-2 text-sm" style={{ color: 'var(--color-warning)' }}>
-                  + {s.detection.uncertainSpans!.length} uncertain detections awaiting review
-                </div>
-              )}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-4">
+              <div className="flex flex-wrap gap-2 mt-3">
                 {Object.entries(s.detection.counts).map(([label, count]) => (
-                  <div key={label} className="surface-2 rounded-lg px-3 py-2">
-                    <div className="mono text-[11px] uppercase tracking-wider text-[color:var(--color-muted)]">
-                      {label}
-                    </div>
-                    <div className="text-lg font-semibold mono">{count}</div>
-                  </div>
+                  <span key={label} className="tag">
+                    {friendlyLabel(label)} · {count}
+                  </span>
                 ))}
               </div>
+              <p className="text-sm text-[color:var(--color-muted)] mt-3">
+                {steps.length === 1
+                  ? 'One last step below.'
+                  : `Work through the ${steps.length} steps below. Only the current step is open.`}
+              </p>
             </div>
 
-            {/* Unreadable script comes before everything else */}
-            {scriptWarning && (
-              <div
-                className="rounded-2xl p-6 mt-8"
-                style={{
-                  background: scriptUnreadable ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.08)',
-                  border: `1px solid ${scriptUnreadable ? 'var(--color-danger)' : 'var(--color-warning)'}`,
-                }}
-              >
-                <h2 className="text-lg font-semibold">
-                  {scriptUnreadable ? 'This document cannot be checked' : 'Part of this document cannot be checked'}
-                </h2>
-                <p className="text-sm mt-2">{scriptWarning.message}</p>
-                {scriptUnreadable ? (
-                  <>
-                    <p className="text-sm text-[color:var(--color-muted)] mt-2">
-                      PrivacyScript reads Latin-script text only. It will not produce a de-identified
-                      version: the result would look clean without being checked. De-identify this
-                      document by hand, or with a tool that supports{' '}
-                      {scriptWarning.scripts.join(', ') || 'this script'}.
-                    </p>
-                    <div className="mt-4">
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={() => {
-                          resetSession();
-                          router.push('/');
-                        }}
-                      >
-                        Start again
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <label className="flex items-start gap-3 mt-4 cursor-pointer text-sm">
-                    <input
-                      type="checkbox"
-                      className="w-4 h-4 mt-0.5 accent-[#4F46E5]"
-                      checked={s.scriptAcknowledged}
-                      onChange={(e) => updateSession({ scriptAcknowledged: e.target.checked })}
-                    />
-                    <span>
-                      I understand the {scriptWarning.scripts.join(', ') || 'non-Latin'} passages are not checked
-                      automatically. I will mark any names or other identifiers in them myself in the
-                      next steps, or confirm they contain none. This is recorded in the audit log.
-                    </span>
-                  </label>
-                )}
+            {finalising ? (
+              <div className="rounded-2xl p-6 mt-6" style={{ border: '1px solid #4F46E5', background: 'rgba(79,70,229,0.06)' }}>
+                <div className="flex items-center gap-3">
+                  <span className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                  <span className="font-semibold">Creating your de-identified file…</span>
+                </div>
+                <p className="text-sm text-[color:var(--color-muted)] mt-2">
+                  Replacing what you chose, then checking the result for anything that slipped through.
+                </p>
               </div>
-            )}
-
-            {/* Transcripts: speakers + contextual passages come first */}
-            {!scriptBlocked && transcript && s.mode && (
-              transcriptPending ? (
-                <TranscriptPanel
-                  transcript={transcript}
-                  mode={s.mode}
-                  onChange={setTranscript}
-                  onConfirm={() => {
-                    const nothingElse = quasiForReview.length === 0 && uncertainForReview.length === 0;
-                    updateSession({
-                      transcript: { ...transcript, confirmed: true },
-                      ...(nothingElse ? { quasiConfirmed: true } : {}),
-                    });
-                  }}
-                />
-              ) : (
-                <div className="surface rounded-2xl px-6 py-4 mt-8 flex flex-wrap items-center justify-between gap-3">
-                  <div className="text-sm">
-                    <span style={{ color: 'var(--color-success)' }}>✓</span> Transcript reviewed
-                    <span className="text-[color:var(--color-muted)]">
-                      {' '}· {transcript.info.speakers.filter((sp) => sp.isName).length} speaker names replaced ·{' '}
-                      {Object.values(transcript.flagDecisions).filter((d) => d === 'remove').length} passages removed
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() => setTranscript({ ...transcript, confirmed: false })}
-                  >
-                    Edit
-                  </button>
-                </div>
-              )
-            )}
-
-            {/* Survey datasets: column plan comes first */}
-            {!scriptBlocked && tabular && s.mode && (
-              columnsPending ? (
-                <SurveyColumnsPanel
-                  tabular={tabular}
-                  dataRows={dataRows}
-                  mode={s.mode}
-                  kThreshold={kThreshold}
-                  convertedFrom={
-                    /\.xlsx$/i.test(s.filename ?? '') ? 'XLSX' : /\.sav$/i.test(s.filename ?? '') ? 'SPSS' : undefined
-                  }
-                  onChange={setTabular}
-                  onConfirm={() => {
-                    // Nothing left to review in the written answers → go
-                    // straight on; an empty "0 found, confirm" step is noise.
-                    const nothingElse = quasiForReview.length === 0 && uncertainForReview.length === 0;
-                    updateSession({
-                      tabular: { ...tabular, confirmed: true },
-                      ...(nothingElse ? { quasiConfirmed: true } : {}),
-                    });
-                  }}
-                />
-              ) : (
-                <div className="surface rounded-2xl px-6 py-4 mt-8 flex flex-wrap items-center justify-between gap-3">
-                  <div className="text-sm">
-                    <span style={{ color: 'var(--color-success)' }}>✓</span> Survey columns confirmed
-                    <span className="text-[color:var(--color-muted)]">
-                      {' '}· {tabular.plans.filter((p) => p.role === 'DIRECT').length} identifying ·{' '}
-                      {tabular.plans.filter((p) => p.role === 'QUASI').length} generalised
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={() => setTabular({ ...tabular, confirmed: false })}
-                  >
-                    Edit columns
-                  </button>
-                </div>
-              )
-            )}
-
-            {/* Phase 1.2: Uncertain NER detections panel */}
-            {!setupPending && uncertainForReview.length > 0 && (
-              <UncertainDetectionsPanel
-                spans={uncertainForReview}
-                decisions={s.uncertainSpanDecisions}
-                onDecide={handleUncertainDecide}
-                onConfirmAll={handleUncertainConfirmAll}
-              />
-            )}
-
-            {/* Phase 1.3: Manual span editor, only shown once the uncertain panel is resolved.
-                For surveys it is tucked away — the column plan is the main control. */}
-            {!setupPending && uncertainResolved && s.originalText && (
-              tabular ? (
-                <details className="surface rounded-2xl px-6 py-4 mt-8">
-                  <summary className="cursor-pointer text-sm font-semibold">
-                    Review individual detections in the cells (optional)
-                  </summary>
-                  <SpanEditor
-                    text={s.originalText}
-                    spans={allDetectedSpans}
-                    dismissedKeys={s.userDismissedSpanKeys}
-                    onAddSpan={handleAddSpan}
-                    onDismissSpan={handleDismissSpan}
-                    onRestoreSpan={handleRestoreSpan}
-                  />
-                </details>
-              ) : (
-                <SpanEditor
-                  text={s.originalText}
-                  spans={allDetectedSpans}
-                  dismissedKeys={s.userDismissedSpanKeys}
-                  onAddSpan={handleAddSpan}
-                  onDismissSpan={handleDismissSpan}
-                  onRestoreSpan={handleRestoreSpan}
-                />
-              )
-            )}
-
-            {/* Quasi-identifier review + confirm */}
-            {!setupPending && uncertainResolved && (
-              <QuasiIdentifierReview
-                quasiSpans={quasiForReview}
-                redactSet={s.quasiToRedact}
-                onToggle={toggleQuasi}
-                onConfirm={confirmQuasi}
-              />
+            ) : (
+              steps.map((st, i) => (
+                <GuidedStep
+                  key={st.id}
+                  number={i + 1}
+                  total={steps.length}
+                  title={st.title}
+                  whatToDo={st.whatToDo}
+                  status={i < activeIndex ? 'done' : i === activeIndex ? 'active' : 'upcoming'}
+                  summary={st.summary}
+                  onChange={st.onChange}
+                >
+                  {i === activeIndex ? st.render() : null}
+                </GuidedStep>
+              ))
             )}
           </>
         ) : (
-          <NerProgress
-            progress={s.nerProgress}
+          <ScanStages
+            filename={s.filename}
+            variant="deidentify"
             onCancel={() => {
               cancelNer();
               resetSession();
@@ -398,10 +408,33 @@ export default function ProcessPage() {
             }}
           />
         )}
-
-        {/* The leak check re-reads the output in the background. */}
-        {s.detection && s.nerProgress?.phase === 'validate' && <NerProgress progress={s.nerProgress} />}
       </section>
     </main>
   );
+}
+
+const FRIENDLY: Record<string, string> = {
+  NAME: 'Names',
+  ADDRESS_LINE: 'Places and addresses',
+  INSTITUTION: 'Organisations',
+  EMAIL: 'Email addresses',
+  PHONE: 'Phone numbers',
+  FAX: 'Fax numbers',
+  DATE: 'Dates',
+  AGE_OVER_89: 'Ages over 89',
+  POSTCODE_UK: 'Postcodes',
+  POSTCODE_US: 'ZIP codes',
+  POSTCODE_EU: 'Postcodes',
+  NHS_NUMBER: 'NHS numbers',
+  MRN: 'Record numbers',
+  REFERENCE_ID: 'Reference numbers',
+  URL: 'Web links',
+  IP: 'IP addresses',
+  ETHNICITY: 'Ethnicity',
+  OCCUPATION: 'Occupations',
+  RARE_DISEASE_ICD: 'Rare disease codes',
+};
+
+function friendlyLabel(label: string): string {
+  return FRIENDLY[label] ?? label.toLowerCase().replace(/_/g, ' ');
 }

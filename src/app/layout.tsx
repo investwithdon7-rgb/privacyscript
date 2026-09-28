@@ -16,12 +16,64 @@ const dmMono = DM_Mono({
   display: 'swap',
 });
 
+const SITE = 'https://tekdruid.com/privacyscript/';
+const DESCRIPTION =
+  'Free, private de-identification in your browser. Anonymise or pseudonymise patient records, interview transcripts and survey data before sharing or using AI tools. Nothing is uploaded. GDPR, HIPAA, EHDS, UK GDPR.';
+
 export const metadata: Metadata = {
-  title: 'PrivacyScript by TekDruid',
-  description:
-    'Check compliance and de-identify health records in your browser. Nothing leaves your device. GDPR, HIPAA, EHDS, UK GDPR, NIS2.',
+  metadataBase: new URL('https://tekdruid.com'),
+  title: {
+    default: 'PrivacyScript: de-identify health data, transcripts and surveys in your browser',
+    template: '%s · PrivacyScript by TekDruid',
+  },
+  description: DESCRIPTION,
+  applicationName: 'PrivacyScript by TekDruid',
+  keywords: [
+    'de-identification', 'anonymise', 'pseudonymise', 'anonymize', 'pseudonymize',
+    'health data', 'patient records', 'interview transcripts', 'survey data', 'qualitative research',
+    'GDPR', 'HIPAA', 'EHDS', 'UK GDPR', 'k-anonymity', 'redact names', 'AI tools', 'Qualtrics', 'SPSS',
+  ],
+  authors: [{ name: 'TekDruid', url: 'https://tekdruid.com' }],
+  alternates: { canonical: SITE },
   robots: { index: true, follow: true },
   manifest: '/privacyscript/manifest.json',
+  openGraph: {
+    type: 'website',
+    url: SITE,
+    siteName: 'PrivacyScript by TekDruid',
+    title: 'PrivacyScript: de-identify health data in your browser',
+    description: DESCRIPTION,
+    images: [{ url: '/privacyscript/logo.png', alt: 'PrivacyScript by TekDruid' }],
+  },
+  twitter: {
+    card: 'summary',
+    title: 'PrivacyScript: de-identify health data in your browser',
+    description: DESCRIPTION,
+    images: ['/privacyscript/logo.png'],
+  },
+};
+
+/** Structured data: helps search engines and AI answer engines describe the tool. */
+const JSON_LD = {
+  '@context': 'https://schema.org',
+  '@type': 'WebApplication',
+  name: 'PrivacyScript by TekDruid',
+  url: SITE,
+  applicationCategory: 'HealthApplication',
+  operatingSystem: 'Any modern web browser',
+  description: DESCRIPTION,
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'EUR' },
+  inLanguage: 'en',
+  publisher: { '@type': 'Organization', name: 'TekDruid', url: 'https://tekdruid.com' },
+  featureList: [
+    'Runs entirely in the browser; files are never uploaded',
+    'Anonymise or pseudonymise (with an encrypted re-identification key)',
+    'Patient records: text, Word, PDF, scanned PDF, FHIR R4, HL7 v2, DICOM',
+    'Interview transcripts: TXT, Word, VTT, SRT, Zoom and Teams exports',
+    'Survey data: CSV, Excel, SPSS; Qualtrics, REDCap, SurveyMonkey, Microsoft Forms',
+    'Name detection in English, Dutch, German, Spanish, French, Italian, Portuguese',
+    'k-anonymity risk measurement and audit log',
+  ],
 };
 
 export function generateViewport() {
@@ -38,6 +90,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <meta name="theme-color" content="#4F46E5" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(JSON_LD) }} />
       </head>
       <body>
         {children}

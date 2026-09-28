@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import {
-  ensureNerLoaded,
+  preloadNer,
   getNerStatus,
   subscribeNerStatus,
   type NERStatus,
@@ -13,7 +13,7 @@ export function NerBanner() {
 
   useEffect(() => subscribeNerStatus(setStatus), []);
 
-  const trigger = () => void ensureNerLoaded();
+  const trigger = () => preloadNer();
 
   if (status.loaded) {
     return (
@@ -34,13 +34,13 @@ export function NerBanner() {
   return (
     <div className="surface rounded-xl px-4 py-3 mt-6 flex items-center justify-between gap-4">
       <div>
-        <div className="text-sm font-semibold">Free-text name detection (optional)</div>
+        <div className="text-sm font-semibold">Name detection</div>
         <div className="text-xs text-[color:var(--color-muted)] mt-1 mono">
           {status.error
             ? `Could not load the name-detection model. The rule engine is running on its own. (${status.error})`
             : status.loadProgress > 0
             ? `Loading model… ${status.loadProgress}%`
-            : 'Loads a ~50MB clinical NER model in your browser. First load is slow; subsequent sessions are instant.'}
+            : 'Finds names, places and organisations in English, Dutch, German, Spanish and more. Downloads once (~135 MB) and runs on this device; later visits load it instantly.'}
         </div>
       </div>
       {status.loadProgress > 0 && status.loadProgress < 100 ? null : (

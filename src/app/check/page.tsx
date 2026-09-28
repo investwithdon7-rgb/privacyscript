@@ -1,11 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Brand } from '@/components/Brand';
 import { DropZone } from '@/components/DropZone';
 import { NerBanner } from '@/components/NerBanner';
-import { ensureNerLoaded } from '@/engine/ner';
+import { cancelNer, preloadNer } from '@/engine/ner';
+import { ScanStages } from '@/components/ScanStages';
+import { resetSession } from '@/state/session';
 import type { ComplianceJurisdiction } from '@/engine/compliance';
 import { runComplianceCheck } from '@/hooks/useDeidentification';
 import { useSession } from '@/hooks/useSession';
@@ -48,16 +50,27 @@ export default function ComplianceCheckPage() {
   const [jurisdiction, setJurisdiction] =
     useState<ComplianceJurisdiction>('GENERAL');
   const [processing, setProcessing] = useState(false);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const cancelled = useRef(false);
 
   useEffect(() => {
-    void ensureNerLoaded();
+    preloadNer();
   }, []);
 
   const onFile = async (file: File) => {
+    cancelled.current = false;
+    setFileName(file.name);
     setProcessing(true);
     await runComplianceCheck(file, jurisdiction);
     setProcessing(false);
-    router.push('/check/report/');
+    if (!cancelled.current) router.push('/check/report/');
+  };
+
+  const cancel = () => {
+    cancelled.current = true;
+    cancelNer();
+    resetSession();
+    setProcessing(false);
   };
 
   return (
@@ -118,21 +131,28 @@ export default function ComplianceCheckPage() {
           <h2 className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)]">
             Step 2. Upload or paste a document
           </h2>
-          <DropZone
-            accept=".txt,.vtt,.srt,.json,.hl7,.pdf,.docx,.csv,.tsv,.xlsx,.sav,.dcm,.dicom"
-            disabled={processing}
-            onFile={onFile}
-          />
-          <NerBanner />
+          {processing ? (
+            // Replace the drop zone with live, staged progress right where
+            // the user is looking.
+            <ScanStages filename={fileName} variant="check" onCancel={cancel} />
+          ) : (
+            <>
+              <DropZone
+                accept=".txt,.vtt,.srt,.json,.hl7,.pdf,.docx,.csv,.tsv,.xlsx,.sav,.dcm,.dicom"
+                disabled={processing}
+                onFile={onFile}
+              />
+              <NerBanner />
+            </>
+          )}
         </div>
 
-        {processing || session.stageIndex > 0 ? (
-          <div className="surface rounded-xl px-4 py-3 mt-6 text-sm text-[color:var(--color-muted)]">
-            {session.error
-              ? session.error
-              : processing
-              ? 'Scanning document for compliance findings...'
-              : 'Scan ready.'}
+        {!processing && session.error ? (
+          <div
+            className="rounded-xl px-4 py-3 mt-6 text-sm"
+            style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid var(--color-danger)' }}
+          >
+            {session.error}
           </div>
         ) : null}
       </section>

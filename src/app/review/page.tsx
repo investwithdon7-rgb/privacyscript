@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { Brand } from '@/components/Brand';
+import { JourneySteps } from '@/components/JourneySteps';
 import { RiskBadge } from '@/components/RiskBadge';
 import { useSession } from '@/hooks/useSession';
 import { COMPLIANCE_PROFILES } from '@/lib/constants';
@@ -52,7 +53,8 @@ export default function ReviewPage() {
       <Brand subtitle="Risk assessment" />
 
       <section className="mt-10">
-        <div className="flex items-center justify-between flex-wrap gap-3">
+        <JourneySteps current="risk" />
+        <div className="flex items-center justify-between flex-wrap gap-3 mt-8">
           <h1 className="text-3xl font-bold">Risk assessment</h1>
           <div className="flex items-center gap-3">
             <span className="tag mono text-xs">{profile.label}</span>
