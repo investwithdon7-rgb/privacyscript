@@ -270,10 +270,12 @@ export async function loadNerPipeline(
   // next to the webpack chunk URL (/_next/static/chunks/…wasm) which 404s.
   tx.env.backends.onnx.wasm.wasmPaths = `${BASE_PATH}/wasm/`;
 
-  // Single-threaded WASM: multi-threading needs cross-origin isolation
-  // headers, which would also block the model download. Speed comes from
-  // the background worker, the smaller model and masking non-speech text.
-  tx.env.backends.onnx.wasm.numThreads = 1;
+  // Threads need cross-origin isolation (COOP/COEP, sent in production by
+  // public/_headers; the model download is a CORS fetch, so it still works).
+  // Leave one core for the page. Without isolation: one thread.
+  const isolated = typeof self !== 'undefined' && (self as { crossOriginIsolated?: boolean }).crossOriginIsolated === true;
+  const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency ?? 1 : 1;
+  tx.env.backends.onnx.wasm.numThreads = isolated ? Math.max(1, Math.min(4, cores - 1)) : 1;
 
   // Allow remote model fetch; cache in IndexedDB.
   tx.env.allowLocalModels = false;

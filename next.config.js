@@ -18,6 +18,22 @@ const nextConfig = {
   trailingSlash: true,
   basePath,
   assetPrefix: basePath ? `${basePath}/` : undefined,
+  // Dev only (static export ignores this): the same cross-origin isolation
+  // headers production sends (public/_headers), so threaded name detection
+  // and OCR behave in dev as they do live.
+  ...(process.env.NODE_ENV === 'development' && {
+    async headers() {
+      return [
+        {
+          source: '/:path*',
+          headers: [
+            { key: 'Cross-Origin-Opener-Policy', value: 'same-origin' },
+            { key: 'Cross-Origin-Embedder-Policy', value: 'require-corp' },
+          ],
+        },
+      ];
+    },
+  }),
   webpack: (config) => {
     config.resolve.fallback = { ...config.resolve.fallback, fs: false, path: false, crypto: false };
     return config;

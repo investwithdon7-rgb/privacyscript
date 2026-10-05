@@ -7,10 +7,13 @@
  * onnxruntime-web, which must fetch its WASM binaries from a known URL.
  * env.backends.onnx.wasm.wasmPaths is set in ner.ts to point here.
  *
- * Threading is disabled (numThreads=1 in ner.ts), so only the two
- * non-threaded variants are needed:
- *   ort-wasm.wasm          — fallback (no SIMD)
- *   ort-wasm-simd.wasm     — preferred (SIMD, ~10 % faster)
+ * The page is cross-origin isolated in production (COOP/COEP in
+ * public/_headers), so ner.ts runs the model on several threads there; the
+ * runtime picks one of these by browser support (each user downloads one):
+ *   ort-wasm.wasm                — fallback (no SIMD, one thread)
+ *   ort-wasm-simd.wasm           — SIMD, one thread (no isolation)
+ *   ort-wasm-threaded.wasm       — threads, no SIMD
+ *   ort-wasm-simd-threaded.wasm  — SIMD + threads (most browsers)
  */
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -21,6 +24,8 @@ const destDir = path.join(__dirname, '..', 'public', 'wasm');
 const FILES = [
   'ort-wasm.wasm',
   'ort-wasm-simd.wasm',
+  'ort-wasm-threaded.wasm',
+  'ort-wasm-simd-threaded.wasm',
 ];
 
 if (!fs.existsSync(srcDir)) {
