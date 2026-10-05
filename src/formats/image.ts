@@ -31,6 +31,8 @@ export interface ImageIngest {
   findings: ImageFinding[];
   /** EXIF orientation (1-8) to keep, when the photo had one. */
   orientation: number | null;
+  /** Faces found in the picture (browser only; formats/faces.ts). */
+  faces?: Array<{ x0: number; y0: number; x1: number; y1: number; score: number }>;
 }
 
 export const IMAGE_MIME: Record<ImageKind, string> = { JPEG: 'image/jpeg', PNG: 'image/png', WEBP: 'image/webp' };

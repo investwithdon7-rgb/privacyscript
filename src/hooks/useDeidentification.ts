@@ -291,6 +291,15 @@ export async function ingestAndDetect(file: File): Promise<void> {
         sourceBytes = await file.arrayBuffer();
         const { ingestImage } = await import('@/formats/image');
         const img = ingestImage(sourceBytes);
+        // Faces (HIPAA identifier 17), with the small bundled model.
+        if (typeof document !== 'undefined') {
+          try {
+            const { detectFaces } = await import('@/formats/faces');
+            img.faces = await detectFaces(await createImageBitmap(new Blob([sourceBytes])));
+          } catch {
+            img.faces = undefined; // could not check: the user is still asked to look
+          }
+        }
         parsedOriginal = img;
         const values = img.findings.map((f) => f.value || f.field);
         text = values.join(LEAF_DELIM);
@@ -747,9 +756,20 @@ export async function finalise(): Promise<void> {
     }
     // Photos: drop every metadata block (lossless).
     let imageOut: Uint8Array | null = null;
+    let facesCovered = 0;
     if (s.format === 'IMAGE') {
-      const { stripImage } = await import('@/formats/image');
-      imageOut = stripImage(s.parsedOriginal as ImageIngest);
+      const img = s.parsedOriginal as ImageIngest;
+      if (img.faces?.length && s.coverFaces && s.sourceBytes) {
+        // Covering faces means re-saving the picture (the canvas output has
+        // no metadata, and the orientation is applied to the pixels).
+        const { coverFaces } = await import('@/formats/faces');
+        const { IMAGE_MIME } = await import('@/formats/image');
+        imageOut = await coverFaces(await createImageBitmap(new Blob([s.sourceBytes])), img.faces, IMAGE_MIME[img.kind]);
+        facesCovered = img.faces.length;
+      } else {
+        const { stripImage } = await import('@/formats/image');
+        imageOut = stripImage(img);
+      }
     }
     updateSession({ replacement: finalReplacement, stageIndex: 3 });
 
@@ -781,7 +801,11 @@ export async function finalise(): Promise<void> {
         ...risk,
         level: 'HIGH',
         reasons: [
-          'Hidden details (location, names, camera serial numbers, thumbnail) were removed, but the picture itself was not changed. Check it shows no face, name, wristband, screen or document before sharing.',
+          facesCovered
+            ? `Hidden details were removed and ${facesCovered} face(s) were covered. Face detection can miss small or turned faces: check the picture shows no face, name, wristband, screen or document before sharing.`
+            : (s.parsedOriginal as ImageIngest).faces?.length
+            ? `${(s.parsedOriginal as ImageIngest).faces!.length} face(s) are visible in the picture (you chose to keep them). A full-face photograph identifies a person (HIPAA identifier 17).`
+            : 'Hidden details (location, names, camera serial numbers, thumbnail) were removed, but the picture itself was not changed. Check it shows no face, name, wristband, screen or document before sharing.',
           ...risk.reasons,
         ],
       };
@@ -888,6 +912,14 @@ export async function finalise(): Promise<void> {
           ? `Photo: removed ${img.findings.map((f) => f.field).join(', ')}. Picture data copied unchanged${img.orientation && img.orientation !== 1 ? '; orientation kept' : ''}.`
           : 'Photo: no hidden details found. Picture data copied unchanged.'
       );
+      if (img.faces === undefined) tabularNotes.push('Photo: faces could not be checked automatically.');
+      else if (img.faces.length) {
+        tabularNotes.push(
+          facesCovered
+            ? `Photo: ${facesCovered} face(s) found and covered; the picture was re-saved.`
+            : `Photo: ${img.faces.length} face(s) found and kept by the user.`
+        );
+      } else tabularNotes.push('Photo: no faces found by the face detector.');
     }
     tabularNotes.push(
       getNerStatus().error

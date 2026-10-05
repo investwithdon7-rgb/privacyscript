@@ -81,6 +81,8 @@ export interface SessionState {
   nerModels: string[];
   /** How replaced details look: codes ([NAME-3F7A91B2]) or realistic fakes. */
   replacementStyle: 'codes' | 'realistic';
+  /** Photos: cover faces found in the picture (default on). */
+  coverFaces: boolean;
   /** User confirmed they will review the unreadable passages themselves (PARTIAL only). */
   scriptAcknowledged: boolean;
   /** Progress within the 6 pipeline stages, 0–6. */
@@ -123,6 +125,7 @@ const INITIAL: SessionState = {
   nerProgress: null,
   nerModels: [],
   replacementStyle: 'codes',
+  coverFaces: true,
   stageIndex: 0,
   quasiConfirmed: false,
   error: null,

@@ -21,6 +21,7 @@ import { COMPLIANCE_PROFILES, K_ANONYMITY_THRESHOLD } from '@/lib/constants';
 import type { CsvIngest } from '@/formats/csv';
 import type { TabularState } from '@/engine/tabular';
 import type { Span } from '@/engine/detect';
+import type { ImageIngest } from '@/formats/image';
 
 export default function ProcessPage() {
   const router = useRouter();
@@ -296,6 +297,25 @@ export default function ProcessPage() {
     done: false,
     render: () => (
       <>
+        {s.format === 'IMAGE' && (s.parsedOriginal as ImageIngest | null)?.faces?.length ? (
+          <label className="surface rounded-2xl px-6 py-4 mt-4 flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={s.coverFaces}
+              onChange={(e) => updateSession({ coverFaces: e.target.checked })}
+            />
+            <span>
+              <span className="text-sm font-semibold">
+                {(s.parsedOriginal as ImageIngest).faces!.length} face(s) found in the picture: cover them
+              </span>
+              <span className="block text-xs text-[color:var(--color-muted)] mt-1">
+                A full-face photo identifies a person. Covering puts a black box over each face and re-saves the
+                picture. Hidden details are removed either way.
+              </span>
+            </span>
+          </label>
+        ) : null}
         {!s.transcript && s.format !== 'IMAGE' && s.format !== 'DICOM' && s.mode && (
           <ReplacementStyleChoice
             value={s.replacementStyle}
