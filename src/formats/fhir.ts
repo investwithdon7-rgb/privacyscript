@@ -24,11 +24,23 @@ export interface FhirLeaf {
   referencePrefix?: string;
 }
 
-export function parseFhir(json: string): { resource: unknown; leaves: FhirLeaf[] } {
-  const resource = JSON.parse(json);
+export function parseFhir(json: string): { resource: unknown; leaves: FhirLeaf[]; ndjson: boolean } {
+  const ndjson = isNdjson(json);
+  // Bulk Data exports (NDJSON): one resource per line, processed together so
+  // the same patient gets the same code on every line. Paths start "[n]".
+  const resource = ndjson
+    ? json.split(/\r?\n/).filter((l) => l.trim()).map((l) => JSON.parse(l))
+    : JSON.parse(json);
   const leaves: FhirLeaf[] = [];
   walk(resource, '', leaves);
-  return { resource, leaves };
+  return { resource, leaves, ndjson };
+}
+
+/** More than one line, and every non-empty line is a JSON object. */
+export function isNdjson(text: string): boolean {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) return false;
+  return lines.every((l) => l.trim().startsWith('{') && l.trim().endsWith('}'));
 }
 
 function walk(node: unknown, path: string, out: FhirLeaf[]): void {
@@ -157,7 +169,8 @@ export function forcedLabelForFhirPath(path: string): IdentifierLabel | null {
  */
 export function reconstructFhir(
   resource: unknown,
-  replacements: Array<{ path: string; replacement: string; referencePrefix?: string }>
+  replacements: Array<{ path: string; replacement: string; referencePrefix?: string }>,
+  ndjson = false
 ): string {
   // structuredClone is ~3× faster than JSON.parse(JSON.stringify(...)) for
   // realistic FHIR bundles and handles edge cases (Date, Map, etc) the JSON
@@ -170,6 +183,7 @@ export function reconstructFhir(
   for (const { path, replacement, referencePrefix } of replacements) {
     setByPath(clone, path, (referencePrefix ?? '') + replacement);
   }
+  if (ndjson) return (clone as unknown[]).map((r) => JSON.stringify(r)).join('\n') + '\n';
   return JSON.stringify(clone, null, 2);
 }
 

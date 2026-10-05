@@ -37,6 +37,7 @@ import {
 } from '@/engine/transcript';
 import { COMPLIANCE_PROFILES, type ComplianceProfileId, type Mode } from '@/lib/constants';
 import { assessScriptCoverage, type ScriptWarning } from '@/engine/script-coverage';
+import { currentWordList, wordListSpans } from '@/engine/wordlist';
 
 export type NerRunner = (text: string, opts?: NerRunOptions) => Promise<Span[]>;
 
@@ -75,6 +76,7 @@ const SKIP_REASONS: Partial<Record<RecordFormat, string>> = {
   PDF_TYPED: 'PDFs go through the page-by-page pipeline. Open this file on its own.',
   PDF_SCANNED: 'PDFs go through the page-by-page pipeline. Open this file on its own.',
   DICOM: 'DICOM images need the imaging pipeline. Open this file on its own.',
+  IMAGE: 'Photos need their own check (what the picture shows). Open this file on its own.',
 };
 
 function extensionOf(name: string): string {
@@ -115,17 +117,19 @@ export async function prepareFile(file: File, id: string, ner: NerRunner): Promi
   const nerSpans = await ner(text, {
     skip: info ? [...info.structuralSpans, ...info.labelSpans] : [],
   });
+  // Study word list: terms the user knows identify someone, in every file.
+  const listSpans = wordListSpans(text, currentWordList());
   if (info) {
     return {
       ...base,
       text,
       docxBytes,
       scriptWarning,
-      detection: detectTranscript(text, info, nerSpans),
+      detection: detectTranscript(text, info, nerSpans, listSpans),
       transcript: { info, flags: contextualFlags(text, info) },
     };
   }
-  return { ...base, text, docxBytes, scriptWarning, detection: detect(text, nerSpans) };
+  return { ...base, text, docxBytes, scriptWarning, detection: detect(text, [...nerSpans, ...listSpans]) };
 }
 
 export interface FinaliseOptions {

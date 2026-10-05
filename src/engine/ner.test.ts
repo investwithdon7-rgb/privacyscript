@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { aggregateEntities, rawNerToSpans, wordPieceOffsets, withOffsets, fitToModel, type PositionedNer } from '@/engine/ner';
+import { aggregateEntities, rawNerToSpans, wordPieceOffsets, withOffsets, fitToModel, modelsFor, softenCaps, dropCoveredSpans, readsAsEnglish, NER_MODELS, type PositionedNer } from '@/engine/ner';
+import { runNerOnLeaves } from '@/engine/ner-leaves';
 
 /**
  * Regression tests for NER post-processing.
@@ -160,5 +161,92 @@ describe('fitToModel', () => {
     for (const p of pieces) expect(p.text.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(500);
     expect(pieces.map((p) => p.text).join('')).toBe(text);
     expect(pieces[1].offset).toBe(100 + pieces[0].text.length);
+  });
+});
+
+describe('clinical model (BILOU tags)', () => {
+  it('joins B-/I-/L- tokens and maps i2b2 labels', () => {
+    const text = 'Seen by Allison Cameron at Leeds General Infirmary.';
+    const tokens = [
+      raw('B-STAFF', 'Allison', 8, 15),
+      raw('L-STAFF', 'Cameron', 16, 23),
+      raw('B-HOSP', 'Leeds', 27, 32),
+      raw('I-HOSP', 'General', 33, 40),
+      raw('L-HOSP', 'Infirmary', 41, 50),
+    ];
+    const spans = rawNerToSpans(tokens, text, 0, NER_MODELS.clinical.labels);
+    expect(spans.map((s) => [s.text, s.label, s.category])).toEqual([
+      ['Allison Cameron', 'NAME', 'HIPAA'],
+      ['Leeds General Infirmary', 'INSTITUTION', 'QUASI'],
+    ]);
+  });
+
+  it('ignores ages and dates (the rules handle those)', () => {
+    const text = 'A 54 year old seen on 12/03/2024.';
+    const tokens = [raw('U-AGE', '54', 2, 4), raw('B-DATE', '12', 22, 24)];
+    expect(rawNerToSpans(tokens, text, 0, NER_MODELS.clinical.labels)).toHaveLength(0);
+  });
+});
+
+describe('model choice', () => {
+  const en = 'The patient was seen in clinic with her daughter and she had no further pain.';
+  const es = 'El paciente fue ingresado en el hospital con dolor y su hija lo acompañó durante la consulta de la tarde.';
+  it('reads the language', () => {
+    expect(readsAsEnglish(en)).toBe(true);
+    expect(readsAsEnglish(es)).toBe(false);
+    expect(readsAsEnglish('PatientName: DOE^JOHN')).toBe(true); // too few words to tell
+  });
+  it('adds the clinical model only when the thorough check is on and the text is English', () => {
+    expect(modelsFor(en, false)).toEqual(['multilingual']);
+    expect(modelsFor(en, true)).toEqual(['multilingual', 'clinical']);
+    expect(modelsFor(es, true)).toEqual(['multilingual']);
+  });
+});
+
+describe('document words after a name', () => {
+  it('keeps a surname that is also a heading word ("DR SUSAN WARD")', () => {
+    const text = 'REFERRING CLINICIAN: DR SUSAN WARD';
+    const tokens = [raw('B-PER', 'SUSAN', 24, 29), raw('B-PER', 'WARD', 30, 34)];
+    expect(rawNerToSpans(tokens, text, 10).map((s) => [s.text, s.start, s.end])).toEqual([['SUSAN WARD', 34, 44]]);
+  });
+  it('still drops the heading on its own', () => {
+    const text = 'WARD 7B round';
+    expect(rawNerToSpans([raw('B-PER', 'WARD', 0, 4)], text, 0)).toHaveLength(0);
+  });
+});
+
+describe('dropCoveredSpans', () => {
+  const span = (start: number, end: number, confidence: number) =>
+    ({ start, end, text: '', label: 'NAME', category: 'HIPAA', source: 'ner', confidence }) as const;
+  it('drops a weaker span inside a stronger one, keeps the rest', () => {
+    const kept = dropCoveredSpans([span(0, 10, 0.99), span(5, 10, 0.54), span(20, 25, 0.6), span(18, 26, 0.5)]);
+    expect(kept.map((s) => [s.start, s.end])).toEqual([[0, 10], [20, 25], [18, 26]]);
+  });
+});
+
+describe('runNerOnLeaves', () => {
+  it('reads each distinct value once and copies spans to every cell', async () => {
+    const values = ['Agree', 'Dr Okafor was kind', '12345', 'Agree', 'Dr Okafor was kind', 'Jane Doe'];
+    let seen = '';
+    const fake = async (text: string) => {
+      seen = text;
+      const i = text.indexOf('Okafor');
+      return [{ start: i, end: i + 6, text: 'Okafor', label: 'NAME', category: 'HIPAA', source: 'ner', confidence: 0.99 } as const];
+    };
+    // Leaf 5 ("Jane Doe") is a forced identifier column: not read.
+    const spans = await runNerOnLeaves(values, 1, new Set([5]), {}, fake);
+    expect(seen).toBe('Agree\n\nDr Okafor was kind');
+    const joined = values.join('\u001F');
+    expect(spans.map((s) => joined.slice(s.start, s.end))).toEqual(['Okafor', 'Okafor']);
+    expect(spans.map((s) => s.start)).toEqual([joined.indexOf('Okafor'), joined.lastIndexOf('Okafor')]);
+  });
+});
+
+describe('softenCaps', () => {
+  it('title-cases ALL-CAPS lines without moving any character', () => {
+    const text = 'REFERRING CLINICIAN: DR SUSAN WARD\nSeen by Dr NHS team today.';
+    const soft = softenCaps(text);
+    expect(soft).toBe('Referring Clinician: Dr Susan Ward\nSeen by Dr NHS team today.');
+    expect(soft.length).toBe(text.length);
   });
 });

@@ -26,3 +26,6 @@ PH records/Testing Zoom Meeting.txt
 PH records/*.vtt
 *.local.test.ts
 PH records/sample-surveys/
+
+# Small face detector (1.2 MB) ships with the app
+!public/models/ultraface-rfb-320.onnx

@@ -190,8 +190,9 @@ export default function ReviewPage() {
               HIGH risk
             </div>
             <p className="text-sm mt-1 text-[color:var(--color-muted)]">
-              k-anonymity is below the threshold ({profile.kThreshold}) for {profile.label}.
-              You may proceed only if you accept the residual re-identification risk.
+              {s.risk.kAnonymity < profile.kThreshold
+                ? `k-anonymity is below the threshold (${profile.kThreshold}) for ${profile.label}. You may proceed only if you accept the residual re-identification risk.`
+                : `${s.risk.reasons[0]} You may proceed only once you have checked this.`}
             </p>
             <label className="flex items-center gap-2 mt-3 text-sm">
               <input
@@ -200,7 +201,9 @@ export default function ReviewPage() {
                 onChange={(e) => setAcknowledged(e.target.checked)}
                 className="accent-[#EF4444]"
               />
-              I accept the residual risk and confirm I have a lawful basis to proceed.
+              {s.risk.kAnonymity >= profile.kThreshold && (s.format === 'IMAGE' || s.format === 'DICOM')
+                ? 'I have checked the picture and confirm I have a lawful basis to proceed.'
+                : 'I accept the residual risk and confirm I have a lawful basis to proceed.'}
             </label>
           </div>
         ) : null}

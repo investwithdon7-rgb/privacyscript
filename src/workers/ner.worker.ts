@@ -1,16 +1,25 @@
 /**
- * Name-detection worker. Runs the NER model off the main thread so long
- * transcripts never freeze the page. One model instance, loaded once and
- * reused for every document (batch files included), cached by the browser.
+ * Name-detection worker. Runs the NER models off the main thread so long
+ * transcripts never freeze the page. Each model is loaded once (on first
+ * use) and reused for every document (batch files included), cached by the
+ * browser.
  *
- * Messages in:  { type: 'run', id, text } | { type: 'cancel', id }
+ * Messages in:  { type: 'run', id, text, model } | { type: 'cancel', id } | { type: 'load', model }
  * Messages out: status | progress | result | cancelled | error
  *
  * Nothing leaves the device: the text stays in this worker's memory; only
  * the model files are fetched (once) from the model host.
  */
 
-import { loadNerPipeline, nerOnText, NerCancelledError } from '@/engine/ner';
+import {
+  contactedHosts,
+  downloadNotice,
+  loadNerPipeline,
+  nerOnText,
+  NerCancelledError,
+  NER_MODELS,
+  type NerModelKey,
+} from '@/engine/ner';
 
 type Ctx = {
   postMessage(message: unknown): void;
@@ -18,27 +27,28 @@ type Ctx = {
 };
 const ctx = self as unknown as Ctx;
 
-let pipelinePromise: ReturnType<typeof loadNerPipeline> | null = null;
+const pipelines = new Map<NerModelKey, ReturnType<typeof loadNerPipeline>>();
 const cancelled = new Set<number>();
 
-function pipeline() {
-  if (!pipelinePromise) {
+function pipeline(key: NerModelKey) {
+  let p = pipelines.get(key);
+  if (!p) {
     ctx.postMessage({
       type: 'status',
-      patch: { message: 'Downloading name-detection model (~135 MB, once)…', loadProgress: 0 },
+      patch: { modelName: NER_MODELS[key].id, message: downloadNotice(key), loadProgress: 0 },
     });
-    pipelinePromise = loadNerPipeline((loadProgress, message) =>
+    p = loadNerPipeline(key, (loadProgress, message) =>
       ctx.postMessage({ type: 'status', patch: { loadProgress, message } })
     ).then(
-      (p) => {
+      (pipe) => {
         ctx.postMessage({
           type: 'status',
-          patch: { loaded: true, loadProgress: 100, message: 'NER model ready.', error: null },
+          patch: { loaded: true, loadProgress: 100, message: 'NER model ready.', error: null, networkHosts: contactedHosts() },
         });
-        return p;
+        return pipe;
       },
       (err: Error) => {
-        pipelinePromise = null; // allow a retry on the next document
+        pipelines.delete(key); // allow a retry on the next document
         ctx.postMessage({
           type: 'status',
           patch: {
@@ -50,19 +60,26 @@ function pipeline() {
         throw err;
       }
     );
+    pipelines.set(key, p);
   }
-  return pipelinePromise;
+  return p;
 }
 
 ctx.onmessage = async (e: MessageEvent) => {
-  const msg = e.data as { type: 'run' | 'cancel' | 'load'; id: number; text?: string };
+  const msg = e.data as {
+    type: 'run' | 'cancel' | 'load';
+    id: number;
+    text?: string;
+    model?: NerModelKey;
+  };
+  const model = msg.model ?? 'multilingual';
   if (msg.type === 'cancel') {
     cancelled.add(msg.id);
     return;
   }
   if (msg.type === 'load') {
     // Warm-up only; failures are reported through status messages.
-    pipeline().catch(() => undefined);
+    pipeline(model).catch(() => undefined);
     return;
   }
   if (msg.type !== 'run') return;
@@ -70,7 +87,7 @@ ctx.onmessage = async (e: MessageEvent) => {
   const { id } = msg;
   let pipe;
   try {
-    pipe = await pipeline();
+    pipe = await pipeline(model);
   } catch {
     // Model unavailable (e.g. offline on first use): rules still run.
     ctx.postMessage({ type: 'result', id, spans: [] });
@@ -78,6 +95,7 @@ ctx.onmessage = async (e: MessageEvent) => {
   }
   try {
     const spans = await nerOnText(pipe, msg.text ?? '', {
+      model,
       onProgress: (done, total) => ctx.postMessage({ type: 'progress', id, done, total }),
       isCancelled: () => cancelled.has(id),
     });

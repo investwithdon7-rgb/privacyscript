@@ -152,6 +152,19 @@ async function acquirePool(
   return p;
 }
 
+/**
+ * OCR one image (a canvas) with the self-hosted Tesseract engine. Used for
+ * text burned into DICOM pixels. One worker, kept for later images.
+ */
+export async function recogniseCanvas(
+  canvas: HTMLCanvasElement
+): Promise<Array<{ text: string; bbox: { x0: number; y0: number; x1: number; y1: number }; confidence: number }>> {
+  const abs = (p: string) => new URL(asset(p), window.location.origin).href;
+  const pool = await acquirePool('eng', 1, abs('/tesseract/worker.min.js'), abs('/tesseract/'), abs('/tesseract/lang'));
+  const ocr = await pool.workers[0].recognize(canvas);
+  return (ocr.data.words ?? []).map((w) => ({ text: w.text, bbox: w.bbox, confidence: w.confidence }));
+}
+
 async function destroyPool(entry: PoolEntry): Promise<void> {
   poolPromises.delete(entry.key);
   await Promise.allSettled(entry.workers.map((w) => w.terminate()));

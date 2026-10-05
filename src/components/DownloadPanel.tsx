@@ -44,7 +44,11 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
   const isDocx = s.format === 'DOCX';
   // Transcripts keep their caption format (.vtt / .srt) so players still load them.
   const sourceExt = (s.filename ?? '').split('.').pop()?.toLowerCase() ?? '';
-  const keepTextExt = s.format === 'TEXT' && ['vtt', 'srt', 'md'].includes(sourceExt);
+  // Transcripts, photos and bulk FHIR keep their own extension (.vtt, .jpg, .ndjson).
+  const keepTextExt =
+    (s.format === 'TEXT' && ['vtt', 'srt', 'md'].includes(sourceExt)) ||
+    s.format === 'IMAGE' ||
+    (s.format === 'FHIR_R4' && sourceExt === 'ndjson');
   const ext = isDocx
     ? docxExt(s.docxFormat)
     : keepTextExt
@@ -54,14 +58,15 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
     ? docxMime(s.docxFormat)
     : keepTextExt && sourceExt === 'vtt'
       ? 'text/vtt'
+      : s.format === 'IMAGE'
+      ? `image/${sourceExt === 'jpg' ? 'jpeg' : sourceExt}`
+      : sourceExt === 'ndjson'
+      ? 'application/fhir+ndjson'
       : MIME[s.format ?? 'TEXT'] ?? 'text/plain';
 
   const downloadRecord = () => {
     const filename = `${baseName}.deidentified.${ext}`;
-    // DICOM: the cleaned binary is stored in sourceBytes (set by the ingest step)
-    if (s.format === 'DICOM' && s.sourceBytes) {
-      downloadBlob(new Blob([s.sourceBytes], { type: 'application/dicom' }), filename);
-    } else if (s.deidentifiedBytes) {
+    if (s.deidentifiedBytes) {
       downloadBlob(new Blob([s.deidentifiedBytes], { type: mime }), filename);
     } else if (s.deidentifiedOutput !== null) {
       downloadText(s.deidentifiedOutput, filename, mime);

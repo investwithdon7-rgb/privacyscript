@@ -1,17 +1,23 @@
 'use client';
 
 import { detect, type Span } from '@/engine/detect';
-import { NerCancelledError, runClinicalNER } from '@/engine/ner';
+import { getNerStatus, modelsFor, NER_MODELS, NerCancelledError, runClinicalNER } from '@/engine/ner';
+import { ruleCoveredLeaves, runNerOnLeaves } from '@/engine/ner-leaves';
+import { currentWordList, wordListSpans } from '@/engine/wordlist';
+import { surrogateRegistry } from '@/engine/surrogate';
 import { replaceSpans, type ReplacementResult } from '@/engine/replace';
 import { assessRisk, type RiskAssessment } from '@/engine/risk';
 import { validate } from '@/engine/validate';
 import { buildAuditLog } from '@/engine/output';
-import { detectFormat, readFileAsText, type RecordFormat } from '@/engine/ingest';
+import { detectFormat, IMAGE_EXTENSIONS, readFileAsText, type RecordFormat } from '@/engine/ingest';
 import { parseFhir, reconstructFhir, forcedLabelForFhirPath } from '@/formats/fhir';
 import { parseHL7, reconstructHL7, forcedLabelForHl7Leaf, type HL7Leaf } from '@/formats/hl7';
 import type { DocxIngestResult } from '@/formats/docx';
 import type { PdfIngest, PdfRedaction } from '@/formats/pdf-typed';
 import type { CsvIngest, CsvLeaf } from '@/formats/csv';
+import type { DicomIngest, DicomRebuildResult, PixelBox } from '@/formats/dicom';
+import type { OcrLine } from '@/formats/dicom-ocr';
+import type { ImageFinding, ImageIngest } from '@/formats/image';
 import type { IdentifierLabel } from '@/lib/identifiers';
 import type { ScannedPdfIngest, ScannedRedaction, ScanProgress } from '@/formats/pdf-scanned';
 import { generateSessionSecret } from '@/engine/crypto';
@@ -66,15 +72,25 @@ const LEAF_DELIM = '\u001F';
  * when regex and NER produce no evidence. Offsets are computed against the
  * LEAF_DELIM-joined text the detect stage runs on.
  */
+/** Leaves of a structured input, kept for name detection (runNerOnLeaves). */
+interface LeafInfo {
+  values: string[] | null;
+  /** Leaves whose whole value is already a forced identifier. */
+  forced: Set<number>;
+}
+
 function buildForcedSpans(
+  leaves: LeafInfo,
   values: string[],
   labelForIndex: (i: number) => IdentifierLabel | null
 ): Span[] {
   const spans: Span[] = [];
   let offset = 0;
+  leaves.values = values;
   values.forEach((v, i) => {
     const label = labelForIndex(i);
     if (label && v.trim().length > 0) {
+      leaves.forced.add(i);
       spans.push({
         start: offset,
         end: offset + v.length,
@@ -110,6 +126,7 @@ export async function ingestAndDetect(file: File): Promise<void> {
     let parsedOriginal: unknown = null;
     let sourceBytes: ArrayBuffer | null = null;
     let forcedSpans: Span[] = [];
+    const leafInfo: LeafInfo = { values: null, forced: new Set() };
     // The typed-PDF case can re-route to the scanned pipeline; the format the
     // rest of the pipeline sees (output reconstruction switches on it!) must
     // reflect that, not the pre-ingest guess.
@@ -118,10 +135,11 @@ export async function ingestAndDetect(file: File): Promise<void> {
     switch (confirmedFormat) {
       case 'FHIR_R4': {
         const raw = await readFileAsText(file);
-        const { resource, leaves } = parseFhir(raw);
-        parsedOriginal = { resource, leaves };
+        const { resource, leaves, ndjson } = parseFhir(raw);
+        parsedOriginal = { resource, leaves, ndjson };
         text = leaves.map((l) => l.value).join(LEAF_DELIM);
         forcedSpans = buildForcedSpans(
+          leafInfo,
           leaves.map((l) => l.value),
           (i) => forcedLabelForFhirPath(leaves[i].path)
         );
@@ -133,6 +151,7 @@ export async function ingestAndDetect(file: File): Promise<void> {
         parsedOriginal = { doc, leaves };
         text = leaves.map((l) => l.value).join(LEAF_DELIM);
         forcedSpans = buildForcedSpans(
+          leafInfo,
           leaves.map((l) => l.value),
           (i) => forcedLabelForHl7Leaf(doc, leaves[i])
         );
@@ -212,6 +231,7 @@ export async function ingestAndDetect(file: File): Promise<void> {
         updateSession({ tabular: buildTabularState(csv, getSession().mode ?? 'PSEUDONYMISE', questions) });
         text = csv.leaves.map((l) => l.value).join(LEAF_DELIM);
         forcedSpans = buildForcedSpans(
+          leafInfo,
           csv.leaves.map((l) => l.value),
           (i) => forcedLabelForCsvColumn(csv.leaves[i].column)
         );
@@ -231,39 +251,62 @@ export async function ingestAndDetect(file: File): Promise<void> {
         break;
       }
       case 'DICOM': {
-        // DICOM: we de-identify at the tag level first (ps3.15 Annex E), then
-        // also run NER on the extracted tag text values as a second-pass catch.
+        // Header values the span engine reads (names, IDs, free text) become
+        // leaves, like FHIR. UIDs, dates and removals are applied by the DICOM
+        // profile itself when the file is rebuilt (formats/dicom.ts).
         sourceBytes = await file.arrayBuffer();
-        const { deidentifyDicom } = await import('@/formats/dicom');
-        const dicomResult = await deidentifyDicom(sourceBytes);
-        // The cleaned bytes become the output for the binary download.
-        parsedOriginal = dicomResult;
-        // Build a text representation for NER detection (values were already blanked,
-        // so the text here is used only to surface what WAS in the file pre-clean).
-        // We extract readable text from the ORIGINAL buffer for the detect pass.
-        const { default: dicomParser } = await import('dicom-parser');
-        const origBuf = new Uint8Array(sourceBytes);
-        let dicomText = '';
-        try {
-          const ds = dicomParser.parseDicom(origBuf);
-          const TAG_NAMES: Record<string, string> = {
-            '00100010': 'PatientName', '00100020': 'PatientID',
-            '00100030': 'PatientBirthDate', '00100040': 'PatientSex',
-            '00080080': 'InstitutionName', '00080090': 'ReferringPhysicianName',
-            '00101040': 'PatientAddress', '00102160': 'EthnicGroup',
-          };
-          const lines: string[] = [];
-          for (const [tag, name] of Object.entries(TAG_NAMES)) {
-            try {
-              const val = ds.string(`x${tag}`);
-              if (val) lines.push(`${name}: ${val}`);
-            } catch { /* tag absent */ }
+        const { ingestDicom, nativePixels, encapsulatedFrames, BROWSER_DECODABLE_TS } = await import('@/formats/dicom');
+        const dicom: DicomWithOcr = { ...(await ingestDicom(sourceBytes)), ocrLines: [] };
+        // Text burned into the picture: read it so it goes through the same
+        // review as every other field. Uncompressed images are read directly;
+        // baseline JPEG is decoded by the browser itself (first frame only).
+        const burned = dicom.burnedIn === 'YES' || dicom.burnedIn === 'LIKELY';
+        if (burned && typeof document !== 'undefined') {
+          try {
+            const ocr = await import('@/formats/dicom-ocr');
+            let pixels = nativePixels(dicom.file);
+            if (!pixels && BROWSER_DECODABLE_TS.has(dicom.file.transferSyntax)) {
+              const frames = encapsulatedFrames(dicom.file);
+              const samplesEl = dicom.file.dataset.find((e) => e.tag === 0x00280002)?.value;
+              const samples: 1 | 3 = samplesEl?.[0] === 3 ? 3 : 1;
+              if (frames?.length) {
+                pixels = await ocr.decodeJpegFrames([frames[0]], samples);
+                dicom.jpegSamples = samples;
+              }
+            }
+            if (pixels) dicom.ocrLines = await ocr.readBurnedInText(pixels);
+          } catch {
+            dicom.ocrLines = []; // OCR unavailable: the warning still asks for a manual check
           }
-          dicomText = lines.join('\n') || '(no readable tags)';
-        } catch { dicomText = '(DICOM parse error)'; }
-        // Store cleaned bytes for download; detect on original tag text.
-        sourceBytes = dicomResult.bytes.buffer;
-        text = dicomText;
+        }
+        parsedOriginal = dicom;
+        const values = [...dicom.leaves.map((l) => l.value), ...dicom.ocrLines.map((l) => l.text)];
+        text = values.join(LEAF_DELIM);
+        forcedSpans = buildForcedSpans(leafInfo, values, (i) => dicom.leaves[i]?.label ?? null);
+        break;
+      }
+      case 'IMAGE': {
+        // Photo metadata: every block is removed on output; the values are
+        // shown for review and forced so they count as found.
+        sourceBytes = await file.arrayBuffer();
+        const { ingestImage } = await import('@/formats/image');
+        const img = ingestImage(sourceBytes);
+        // Faces (HIPAA identifier 17), with the small bundled model.
+        if (typeof document !== 'undefined') {
+          try {
+            const { detectFaces } = await import('@/formats/faces');
+            img.faces = await detectFaces(await createImageBitmap(new Blob([sourceBytes])));
+          } catch {
+            img.faces = undefined; // could not check: the user is still asked to look
+          }
+        }
+        parsedOriginal = img;
+        const values = img.findings.map((f) => f.value || f.field);
+        text = values.join(LEAF_DELIM);
+        forcedSpans = buildForcedSpans(leafInfo, values, (i) => imageFindingLabel(img.findings[i]));
+        // Every field is removed whatever it says: no need for the name model
+        // to ask about "Apple" (the camera make).
+        values.forEach((_, i) => leafInfo.forced.add(i));
         break;
       }
       default:
@@ -289,10 +332,26 @@ export async function ingestAndDetect(file: File): Promise<void> {
     // carry confidence 1, so they always land in the auto-accepted bucket.
     // The model reads only what people wrote or said: caption timings, cue
     // IDs and speaker labels are masked (speakers are handled by rules).
-    const nerSpans = await runClinicalNER(text, {
-      skip: transcriptInfo ? [...transcriptInfo.structuralSpans, ...transcriptInfo.labelSpans] : [],
-      onProgress: (done, total) => updateSession({ nerProgress: { phase: 'detect', done, total } }),
-    });
+    const nerModels = modelsFor(text);
+    updateSession({ nerModels: nerModels.map((m) => NER_MODELS[m].id) });
+    // Study word list: terms the user knows identify someone.
+    forcedSpans = [...forcedSpans, ...wordListSpans(text, currentWordList())];
+    const onNerProgress = (done: number, total: number) =>
+      updateSession({ nerProgress: { phase: 'detect', done, total } });
+    // Structured inputs: each distinct field value is read once.
+    if (leafInfo.values) {
+      for (const i of ruleCoveredLeaves(leafInfo.values, LEAF_DELIM.length, text)) leafInfo.forced.add(i);
+    }
+    const nerSpans = leafInfo.values
+      ? await runNerOnLeaves(leafInfo.values, LEAF_DELIM.length, leafInfo.forced, {
+          models: nerModels,
+          onProgress: onNerProgress,
+        })
+      : await runClinicalNER(text, {
+          models: nerModels,
+          skip: transcriptInfo ? [...transcriptInfo.structuralSpans, ...transcriptInfo.labelSpans] : [],
+          onProgress: onNerProgress,
+        });
     updateSession({ nerProgress: null });
     const detection = transcriptInfo
       ? detectTranscript(text, transcriptInfo, nerSpans, forcedSpans)
@@ -530,6 +589,7 @@ function profileForComplianceAction(
  */
 function detectInitialFormat(file: File): RecordFormat {
   const ext = file.name.split('.').pop()?.toLowerCase();
+  if (IMAGE_EXTENSIONS.has(ext ?? '')) return 'IMAGE';
   if (ext === 'pdf') return 'PDF_TYPED';
   if (ext === 'docx') return 'DOCX';
   if (ext === 'hl7') return 'HL7_V2';
@@ -544,7 +604,7 @@ function detectInitialFormat(file: File): RecordFormat {
  * content. Returns the initial guess unchanged for binary formats.
  */
 async function confirmFormat(file: File, initial: RecordFormat): Promise<RecordFormat> {
-  if (initial === 'PDF_TYPED' || initial === 'DOCX' || initial === 'CSV' || initial === 'HL7_V2') {
+  if (initial === 'PDF_TYPED' || initial === 'DOCX' || initial === 'CSV' || initial === 'HL7_V2' || initial === 'IMAGE') {
     return initial;
   }
   // Read up to 4 KB for sniffing (avoids reading a potentially large file twice).
@@ -613,6 +673,9 @@ export async function finalise(): Promise<void> {
       ...confirmedNameSpans,
     ];
 
+    // Realistic fakes: text formats only (photos and DICOM pixels are not text;
+    // DICOM header names would not fit their fields as reliably as codes).
+    const realistic = s.replacementStyle === 'realistic' && s.format !== 'IMAGE' && s.format !== 'DICOM';
     const replacement = await replaceSpans(
       s.originalText,
       allSpans,
@@ -623,6 +686,9 @@ export async function finalise(): Promise<void> {
         quasiToRedact: s.quasiToRedact,
         labeller: tr
           ? transcriptLabeller(tr.info, tr.readable, removedFlags.map((f) => f.text))
+          : undefined,
+        surrogates: realistic
+          ? (label, original) => surrogateRegistry(s.mode === 'PSEUDONYMISE' ? secret?.rawKey : undefined).get(label, original)
           : undefined,
       }
     );
@@ -660,6 +726,51 @@ export async function finalise(): Promise<void> {
         mapping: { ...replacement.mapping, ...tabularOut.mapping },
       };
     }
+    // DICOM: rebuild the file now (UIDs, dates and removals are applied by the
+    // profile); pseudonymised UIDs belong in the re-identification key.
+    let dicomOut: DicomRebuildResult | null = null;
+    if (s.format === 'DICOM') {
+      const { rebuildDicom } = await import('@/formats/dicom');
+      const dicom = s.parsedOriginal as DicomWithOcr;
+      const pixelBoxes = await burnedInBoxes(dicom, allSpans, activeQuasi, s.quasiToRedact);
+      // Compressed (JPEG) image with text to remove: decode every frame,
+      // black out, write uncompressed. Nothing to remove: keep it as it was.
+      let replacePixels: { data: Uint8Array; samples: 1 | 3 } | undefined;
+      if (dicom.jpegSamples && pixelBoxes.length) {
+        const { encapsulatedFrames, blackOutPixels } = await import('@/formats/dicom');
+        const { decodeJpegFrames } = await import('@/formats/dicom-ocr');
+        const decoded = await decodeJpegFrames(encapsulatedFrames(dicom.file)!, dicom.jpegSamples);
+        replacePixels = { data: blackOutPixels(decoded, pixelBoxes), samples: dicom.jpegSamples };
+      }
+      dicomOut = await rebuildDicom(dicom, replacement.text.split(LEAF_DELIM), {
+        mode: s.mode,
+        secret: secret ?? undefined,
+        dateShiftDays: replacement.dateShiftDays,
+        pixelBoxes,
+        replacePixels,
+      });
+      finalReplacement = {
+        ...replacement,
+        mapping: { ...replacement.mapping, ...dicomOut.uidMapping },
+      };
+    }
+    // Photos: drop every metadata block (lossless).
+    let imageOut: Uint8Array | null = null;
+    let facesCovered = 0;
+    if (s.format === 'IMAGE') {
+      const img = s.parsedOriginal as ImageIngest;
+      if (img.faces?.length && s.coverFaces && s.sourceBytes) {
+        // Covering faces means re-saving the picture (the canvas output has
+        // no metadata, and the orientation is applied to the pixels).
+        const { coverFaces } = await import('@/formats/faces');
+        const { IMAGE_MIME } = await import('@/formats/image');
+        imageOut = await coverFaces(await createImageBitmap(new Blob([s.sourceBytes])), img.faces, IMAGE_MIME[img.kind]);
+        facesCovered = img.faces.length;
+      } else {
+        const { stripImage } = await import('@/formats/image');
+        imageOut = stripImage(img);
+      }
+    }
     updateSession({ replacement: finalReplacement, stageIndex: 3 });
 
     // Stage 4: RISK
@@ -683,6 +794,21 @@ export async function finalise(): Promise<void> {
         kThreshold,
         s.mode
       );
+    }
+    if (dicomOut) risk = withBurnedInRisk(risk, s.parsedOriginal as DicomWithOcr);
+    if (imageOut) {
+      risk = {
+        ...risk,
+        level: 'HIGH',
+        reasons: [
+          facesCovered
+            ? `Hidden details were removed and ${facesCovered} face(s) were covered. Face detection can miss small or turned faces: check the picture shows no face, name, wristband, screen or document before sharing.`
+            : (s.parsedOriginal as ImageIngest).faces?.length
+            ? `${(s.parsedOriginal as ImageIngest).faces!.length} face(s) are visible in the picture (you chose to keep them). A full-face photograph identifies a person (HIPAA identifier 17).`
+            : 'Hidden details (location, names, camera serial numbers, thumbnail) were removed, but the picture itself was not changed. Check it shows no face, name, wristband, screen or document before sharing.',
+          ...risk.reasons,
+        ],
+      };
     }
     updateSession({ risk, stageIndex: 4 });
 
@@ -719,12 +845,43 @@ export async function finalise(): Promise<void> {
     const validation = await validate(validationText, {
       mode: s.mode,
       originalIdentifiers: Array.from(new Set(originalIdentifiers)),
+      ownValues: realistic ? Object.values(replacement.mapping) : undefined,
     });
+    if (dicomOut) {
+      // Validate the bytes that will be downloaded: the engine's fields get the
+      // usual checks, and no original name, ID, UID or date may survive in ANY
+      // text field of the written file.
+      const { dicomTextValues } = await import('@/formats/dicom');
+      const values = await dicomTextValues(dicomOut.bytes);
+      const fieldCheck = await validate(values.engine.join(LEAF_DELIM), {
+        mode: s.mode,
+        originalIdentifiers: Array.from(new Set(originalIdentifiers)),
+      });
+      const fileCheck = await validate(values.all.join(LEAF_DELIM), {
+        mode: 'PSEUDONYMISE', // verbatim originals only; UIDs would trip the regex scan
+        originalIdentifiers: Array.from(new Set([...originalIdentifiers, ...dicomOut.originals])),
+      });
+      validation.leaks = fieldCheck.leaks;
+      validation.originalsLeaked = Array.from(new Set([...fieldCheck.originalsLeaked, ...fileCheck.originalsLeaked]));
+      validation.passed = validation.originalsLeaked.length === 0;
+    }
+    if (imageOut) {
+      // Validate the bytes that will be downloaded: no metadata may remain
+      // (a kept orientation is not a finding).
+      const { ingestImage } = await import('@/formats/image');
+      const left = ingestImage(imageOut.slice().buffer).findings;
+      validation.originalsLeaked = left.map((f) => f.field);
+      validation.passed = left.length === 0;
+    }
     validation.nerLeaks = keptPossibleNames(s, validationText);
     updateSession({ validation, stageIndex: 5 });
 
     // Stage 6: OUTPUT
-    const { textOutput, bytesOutput } = tabularOut
+    const { textOutput, bytesOutput } = dicomOut
+      ? { textOutput: undefined, bytesOutput: dicomOut.bytes }
+      : imageOut
+      ? { textOutput: undefined, bytesOutput: imageOut }
+      : tabularOut
       ? {
           textOutput: (await import('papaparse')).default.unparse(tabularOut.rows, {
             columns: tabularOut.headers,
@@ -734,6 +891,41 @@ export async function finalise(): Promise<void> {
       : await reconstructOutput(s.format!, replacement);
     const tabularNotes = tab && tabularOut ? tabularAuditNotes(tab, tabularOut) : [];
     if (tr) tabularNotes.push(...transcriptAuditNotes(tr));
+    if (realistic) {
+      tabularNotes.push(
+        `Replacement style: realistic fake values (names, places, numbers in reserved fictional ranges)${s.mode === 'PSEUDONYMISE' ? '; the key file maps them back' : ''}.`
+      );
+    }
+    if (dicomOut) tabularNotes.push(...dicomOut.notes);
+    const wordList = currentWordList();
+    if (wordList.length) {
+      // Counts only: the terms themselves identify people.
+      tabularNotes.push(
+        `Study word list: ${wordList.length} term(s), ${wordListSpans(s.originalText, wordList).length} match(es) hidden.`
+      );
+    }
+    if (imageOut) {
+      const img = s.parsedOriginal as ImageIngest;
+      // Field names only, never values.
+      tabularNotes.push(
+        img.findings.length
+          ? `Photo: removed ${img.findings.map((f) => f.field).join(', ')}. Picture data copied unchanged${img.orientation && img.orientation !== 1 ? '; orientation kept' : ''}.`
+          : 'Photo: no hidden details found. Picture data copied unchanged.'
+      );
+      if (img.faces === undefined) tabularNotes.push('Photo: faces could not be checked automatically.');
+      else if (img.faces.length) {
+        tabularNotes.push(
+          facesCovered
+            ? `Photo: ${facesCovered} face(s) found and covered; the picture was re-saved.`
+            : `Photo: ${img.faces.length} face(s) found and kept by the user.`
+        );
+      } else tabularNotes.push('Photo: no faces found by the face detector.');
+    }
+    tabularNotes.push(
+      getNerStatus().error
+        ? `Name detection: model could not load (${getNerStatus().error}); rules ran alone.`
+        : `Name detection models: ${s.nerModels.join(' + ') || 'none'}.`
+    );
     if (s.scriptWarning) {
       tabularNotes.push(
         `Unreadable script (${s.scriptWarning.scripts.join(', ') || 'non-Latin'}): ${Math.round(s.scriptWarning.unreadableRatio * 100)}% of letters could not be checked automatically. The user confirmed they reviewed those passages manually.`
@@ -787,6 +979,68 @@ function keptPossibleNames(s: ReturnType<typeof getSession>, output: string) {
     seen.add(word);
     return new RegExp(`(?<![\\p{L}\\d])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\d])`, 'u').test(output);
   });
+}
+
+/** Forced label for a photo metadata field (for counting; all are removed). */
+function imageFindingLabel(f: ImageFinding): IdentifierLabel | null {
+  if (f.field === 'GPS location') return 'ADDRESS_LINE';
+  if (/owner|artist|author|creator/i.test(f.field)) return 'NAME';
+  if (/date/i.test(f.field)) return 'DATE';
+  if (/serial|unique image id/i.test(f.field)) return 'DEVICE_ID';
+  if (/comment|description|title|subject|keywords|^text:/i.test(f.field)) return 'REFERENCE_ID';
+  return null;
+}
+
+/** A DICOM file plus the text read from its pixels (one leaf per line, after the header leaves). */
+type DicomWithOcr = DicomIngest & {
+  ocrLines: OcrLine[];
+  /** Set when the image is baseline JPEG that the browser decoded for OCR. */
+  jpegSamples?: 1 | 3;
+};
+
+/**
+ * Pixel boxes to black out: every image word inside a redacted span, and,
+ * as a safety net, any image word equal to a part of the patient's name or
+ * ID from the header (burned-in banners usually reprint them).
+ */
+async function burnedInBoxes(
+  dicom: DicomWithOcr,
+  spans: Span[],
+  quasi: Span[],
+  quasiToRedact: Set<string>
+): Promise<PixelBox[]> {
+  if (dicom.ocrLines.length === 0) return [];
+  const { boxesForRedactions } = await import('@/formats/dicom-ocr');
+  const starts: number[] = [];
+  let offset = 0;
+  for (const l of dicom.leaves) offset += l.value.length + LEAF_DELIM.length;
+  for (const line of dicom.ocrLines) {
+    starts.push(offset);
+    offset += line.text.length + LEAF_DELIM.length;
+  }
+  const { safetyNetRanges } = await import('@/formats/dicom-ocr');
+  const ranges = [...spans, ...quasi.filter((q) => quasiToRedact.has(q.label))].map((sp) => ({
+    start: sp.captureStart ?? sp.start,
+    end: sp.captureEnd ?? sp.end,
+  }));
+  const headerValues = dicom.leaves.filter((l) => l.label).map((l) => l.value);
+  ranges.push(...safetyNetRanges(dicom.ocrLines, starts, headerValues));
+  return boxesForRedactions(dicom.ocrLines, starts, ranges);
+}
+
+/**
+ * Text burned into the pixels is not removed. When the file says it is there,
+ * or the kind of image usually has it, the user must confirm they checked.
+ */
+function withBurnedInRisk(risk: RiskAssessment, dicom: DicomWithOcr): RiskAssessment {
+  if (dicom.burnedIn !== 'YES' && dicom.burnedIn !== 'LIKELY') return risk;
+  const reason =
+    dicom.ocrLines.length > 0
+      ? 'Text burned into the picture was read and identifying words were blacked out in every frame. Reading text from images is not perfect: check the picture shows no name, date or ID before sharing.'
+      : dicom.burnedIn === 'YES'
+      ? 'The image has text burned into the pixels (the file says so). The picture was not changed: check it shows no name, date or ID before sharing.'
+      : 'This kind of image (ultrasound, screenshot or scanned document) often has names or dates burned into the picture. The picture was not changed: check it before sharing.';
+  return { ...risk, level: 'HIGH', reasons: [reason, ...risk.reasons] };
 }
 
 /**
@@ -886,6 +1140,7 @@ async function reconstructOutput(
       const parsed = s.parsedOriginal as {
         resource: unknown;
         leaves: Array<{ path: string; value: string; referencePrefix?: string }>;
+        ndjson?: boolean;
       };
       const parts = replacement.text.split(LEAF_DELIM);
       const replaced = parsed.leaves.map((leaf, i) => ({
@@ -893,7 +1148,7 @@ async function reconstructOutput(
         replacement: parts[i] ?? leaf.value,
         referencePrefix: leaf.referencePrefix,
       }));
-      return { textOutput: reconstructFhir(parsed.resource, replaced) };
+      return { textOutput: reconstructFhir(parsed.resource, replaced, parsed.ndjson) };
     }
     case 'HL7_V2': {
       const parsed = s.parsedOriginal as {

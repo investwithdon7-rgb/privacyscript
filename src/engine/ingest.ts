@@ -7,6 +7,7 @@ export type RecordFormat =
   | 'DOCX'
   | 'CSV'
   | 'DICOM'
+  | 'IMAGE'
   | 'UNKNOWN';
 
 export interface IngestResult {
@@ -25,6 +26,9 @@ export interface IngestResult {
 
 const HL7_SEGMENT_RE = /^MSH\|/;
 
+/** Photos (HEIC/TIFF are recognised so the user gets a clear "convert it" message). */
+export const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'tif', 'tiff']);
+
 /**
  * Decide which format an uploaded file is. Uses extension first, then a
  * content sniff for robustness.
@@ -34,7 +38,8 @@ export function detectFormat(filename: string, content: string): RecordFormat {
 
   if (ext === 'hl7') return 'HL7_V2';
   if (ext === 'dcm' || ext === 'dicom') return 'DICOM';
-  if (ext === 'json') {
+  if (IMAGE_EXTENSIONS.has(ext ?? '')) return 'IMAGE';
+  if (ext === 'json' || ext === 'ndjson') {
     return looksLikeFhir(content) ? 'FHIR_R4' : 'TEXT';
   }
   if (ext === 'pdf') return 'PDF_TYPED'; // PDF subtype resolved later in the PDF pipeline
@@ -42,7 +47,10 @@ export function detectFormat(filename: string, content: string): RecordFormat {
   if (ext === 'csv' || ext === 'tsv' || ext === 'xlsx' || ext === 'sav') return 'CSV';
   if (ext === 'txt' || ext === 'md') return 'TEXT';
 
-  // Sniff content
+  // Sniff content. DICOM files often have no extension ("IM0001"): the
+  // marker sits after a 128-byte preamble.
+  const dicm = content.indexOf('DICM');
+  if (dicm >= 100 && dicm <= 260) return 'DICOM';
   if (HL7_SEGMENT_RE.test(content.trim())) return 'HL7_V2';
   if (looksLikeFhir(content)) return 'FHIR_R4';
 

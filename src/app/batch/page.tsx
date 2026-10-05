@@ -3,6 +3,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Brand } from '@/components/Brand';
+import { WordListPanel } from '@/components/WordListPanel';
 import { ComplianceModeSelector } from '@/components/ComplianceModeSelector';
 import { useBatchDeidentification, type BatchItem } from '@/hooks/useBatchDeidentification';
 import type { Mode, ComplianceProfileId } from '@/lib/constants';
@@ -157,6 +158,8 @@ export default function BatchPage() {
             {/* Step 2: Files */}
             <div className="mb-8">
               <h2 className={`${heading} mb-3`}>Step 2. Add files</h2>
+              <WordListPanel />
+              <div className="mt-4" />
               <div
                 role="button"
                 tabIndex={0}
@@ -173,7 +176,7 @@ export default function BatchPage() {
                   type="file"
                   multiple
                   className="hidden"
-                  accept=".txt,.md,.vtt,.srt,.json,.hl7,.docx"
+                  accept=".txt,.md,.vtt,.srt,.json,.ndjson,.hl7,.docx"
                   onChange={(e) => handleFiles(e.target.files)}
                 />
                 <div className="text-lg font-semibold mb-2">Drop files or click to add</div>
@@ -182,7 +185,7 @@ export default function BatchPage() {
                   People named in several files get the same label in every file.
                 </div>
                 <div className="text-xs text-[color:var(--color-muted)] mt-2">
-                  Surveys, PDFs and DICOM need their own review. Open those one at a time.
+                  Surveys, PDFs, DICOM and photos need their own review. Open those one at a time.
                 </div>
               </div>
 

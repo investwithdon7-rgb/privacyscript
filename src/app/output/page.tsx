@@ -1,11 +1,12 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Brand } from '@/components/Brand';
 import { JourneySteps } from '@/components/JourneySteps';
 import { DiffViewer } from '@/components/DiffViewer';
 import { DownloadPanel } from '@/components/DownloadPanel';
+import { NetworkLedger } from '@/components/NetworkLedger';
 import { useSession } from '@/hooks/useSession';
 import { resetSession } from '@/state/session';
 
@@ -60,6 +61,7 @@ export default function OutputPage() {
         </div>
 
         <DownloadPanel mode={s.mode} />
+        <NetworkLedger />
 
         <h2 className="mt-10 text-lg font-semibold">Preview</h2>
         {s.deidentifiedOutput ? (
@@ -73,6 +75,8 @@ export default function OutputPage() {
             ]}
             deidentified={s.deidentifiedOutput}
           />
+        ) : s.format === 'IMAGE' && s.deidentifiedBytes ? (
+          <PhotoPreview bytes={s.deidentifiedBytes} filename={s.filename ?? ''} />
         ) : (
           <div className="surface rounded-2xl p-6 mt-4 text-sm text-[color:var(--color-muted)]">
             Binary output ({s.format}). Download to view in the appropriate viewer.
@@ -159,5 +163,27 @@ export default function OutputPage() {
         </div>
       </section>
     </main>
+  );
+}
+
+/** The cleaned photo, shown so the user can check what the picture itself shows. */
+function PhotoPreview({ bytes, filename }: { bytes: Uint8Array; filename: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const ext = filename.split('.').pop()?.toLowerCase();
+    const u = URL.createObjectURL(new Blob([bytes], { type: ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg' }));
+    setUrl(u);
+    return () => URL.revokeObjectURL(u);
+  }, [bytes, filename]);
+  return (
+    <div className="surface rounded-2xl p-6 mt-4">
+      <p className="text-sm text-[color:var(--color-muted)]">
+        Hidden details are removed. The picture is unchanged: check it shows no face, name, wristband, screen or document.
+      </p>
+      {url && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={url} alt="Cleaned photo" className="mt-4 max-h-[480px] rounded-xl border border-[color:var(--color-border)]" />
+      )}
+    </div>
   );
 }

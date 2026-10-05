@@ -190,6 +190,14 @@ Every record goes through these stages in order. Each stage is independently log
 | CSV (records + survey exports) | Papa Parse | Column plan + span engine, see Survey datasets | v1 |
 | XLSX (survey exports) | jszip (first worksheet) | Output as CSV | v1 |
 | SPSS .sav | Custom reader (uncompressed + bytecode; not .zsav) | Output as CSV, codes kept; variable labels guide column roles | v1 |
+| DICOM | Own codec (`src/formats/dicom.ts`): implicit/explicit LE, deflate, encapsulated copied | Rebuilt to PS3.15 Annex E (UIDs → 2.25.HMAC, dates shifted/year, privates removed); burned-in text OCR'd and blacked out in every frame (`dicom-ocr.ts`): uncompressed, or baseline JPEG decoded by the browser and written uncompressed. JPEG 2000/LS: warning only | v1 |
+| Photos (JPEG/PNG/WebP) | `src/formats/image.ts` | All metadata removed losslessly (GPS, owner, serials, thumbnail); orientation kept. Faces found by bundled UltraFace (`faces.ts`, `public/models/`, 1.2 MB) and covered by default (re-saves the picture) | v1 |
+| FHIR bulk (.ndjson) | `parseFhir` (one resource per line) | One line per resource out; lines processed together for consistent codes | v1 |
+
+Cross-format options:
+- **Study word list** (`src/engine/wordlist.ts`): user terms hidden in every file; in tab memory only, saved/loaded as a text file by the user.
+- **Realistic replacements** (`src/engine/surrogate.ts`): optional fake names/places/numbers (reserved fictional ranges); same person = same fake across the session; key file maps them back in pseudonymise mode. Codes stay the default.
+- **Connections panel** (`NetworkLedger.tsx`): hosts the tab fetched from, read from the browser's resource timing.
 
 ### Survey datasets (CSV / XLSX) — `src/engine/tabular.ts`
 
@@ -233,7 +241,7 @@ Each row is a person, so risk is measured across rows, not per record.
   held back and excluded from the ZIP.
 - The re-identification key is one passphrase-encrypted file, downloaded
   separately — never inside the ZIP.
-- Surveys, PDFs and DICOM are skipped with a reason (they need their own review).
+- Surveys, PDFs, DICOM and photos are skipped with a reason (they need their own review).
 
 ### Scanned PDF optimisation strategy
 
@@ -278,19 +286,22 @@ Default selection: Option A. User can toggle on the output screen before downloa
 
 ## NER Model
 
-**Primary model**: `d4data/biomedical-ner-all` — a biomedical/clinical NER model trained
-on medical text. Recognises entities including: disease, sign/symptom, medication, dosage,
-biological structure, lab values, severity, history, family history, age, sex, clinical event,
-duration, frequency, therapeutic procedure, diagnostic procedure, and more.
+**Default model**: `Xenova/distilbert-base-multilingual-cased-ner-hrl` (~135 MB, quantised)
+for PER / LOC / ORG in English, Dutch, German, Spanish, French, Italian, Portuguese and more.
+It replaced the English-only `Xenova/bert-base-NER`, which mis-tagged ordinary Spanish words
+as names. Its DATE label is ignored (exact dates come from rules).
 
-Exported to ONNX for Transformers.js. Quantised to INT8 to keep bundle under ~120MB.
+**Optional "thorough check" (English only, off by default)**: `onnx-community/deid_bert_i2b2-ONNX`
+(obi/deid_bert_i2b2, MIT, ~110 MB), trained on the i2b2 2014 de-identification corpus
+(patients, staff, hospitals, locations, IDs). Its findings are added to the default model's;
+on test notes the two miss different names. `d4data/biomedical-ner-all` was NOT used: it tags
+diseases and drugs, not identifiers. Lightness rule: one model by default.
 
-**Generic entity model (what actually runs today)**:
-`Xenova/distilbert-base-multilingual-cased-ner-hrl` (~135 MB, quantised) for PER / LOC /
-ORG in English, Dutch, German, Spanish, French, Italian, Portuguese and more. It replaced
-the English-only `Xenova/bert-base-NER`, which mis-tagged ordinary Spanish words as names.
-Its DATE label is ignored (exact dates come from rules). The clinical model above is
-still not converted/hosted.
+- ALL-CAPS lines are read in title case (`softenCaps`, positions unchanged).
+- Structured inputs (surveys, FHIR, HL7, DICOM) go through `runNerOnLeaves`
+  (`src/engine/ner-leaves.ts`): each distinct value once; numbers, codes, forced columns
+  and rule-matched cells skipped.
+- Multi-threaded WASM where the page is cross-origin isolated (production `_headers`).
 
 **Runs in a Web Worker** (`src/workers/ner.worker.ts`): the page never freezes, progress is
 reported per chunk and runs can be cancelled. Implementation notes that matter:

@@ -36,6 +36,11 @@ interface ReplaceOptions {
    * order; return null to use the mode's default replacement.
    */
   labeller?: (label: IdentifierLabel, original: string) => string | null;
+  /**
+   * Realistic replacements (engine/surrogate.ts), used after the labeller;
+   * return null to fall back to the mode's default (dates, postcodes...).
+   */
+  surrogates?: (label: IdentifierLabel, original: string) => string | null;
 }
 
 /**
@@ -117,7 +122,7 @@ export async function replaceSpans(
     if (seenKeys.has(key)) continue;
     seenKeys.add(key);
 
-    const fixed = options.labeller?.(t.span.label, t.original);
+    const fixed = options.labeller?.(t.span.label, t.original) ?? options.surrogates?.(t.span.label, t.original);
     if (fixed != null) {
       cache.set(key, fixed);
       continue;
@@ -186,30 +191,38 @@ export async function replaceSpans(
   // "Northwell General Hospital" is swept before "Northwell". Same length
   // floor (≥ 4 chars) as the validation stage — by construction validation
   // can no longer find a mapping original in the output.
-  const sweepable = Object.entries(mapping)
-    .filter(([orig]) => orig.trim().length >= 4)
-    .sort((a, b) => b[0].length - a[0].length)
-    // Whitespace inside an original is matched flexibly (\s+): PDF text
-    // extraction produces variable spacing, so "Karoline Stenberg" must also
-    // sweep "Karoline  Stenberg" and "Karoline\nStenberg".
-    .map(([orig, repl]) => ({
-      repl,
-      probe: orig.trim().split(/\s+/)[0],
-      re: new RegExp(`(?<!\\w)${flexibleWhitespacePattern(orig)}(?!\\w)`, 'g'),
-    }));
+  // Whitespace inside an original is matched flexibly (\s+): PDF text
+  // extraction produces variable spacing, so "Karoline Stenberg" must also
+  // sweep "Karoline  Stenberg" and "Karoline\nStenberg".
+  const sweepable = Object.keys(mapping).filter((orig) => orig.trim().length >= 4);
   let residualSweeps = 0;
   if (sweepable.length > 0) {
+    const finder = new OriginalFinder(sweepable, 'sweep');
     for (const idx of untouchedIdx) {
-      let seg = segments[idx];
-      for (const { re, repl, probe } of sweepable) {
-        if (!seg.includes(probe)) continue;
-        re.lastIndex = 0;
-        seg = seg.replace(re, () => {
-          residualSweeps++;
-          return repl;
-        });
+      const seg = segments[idx];
+      const hits = finder.findAll(seg);
+      if (hits.length === 0) continue;
+      // Longest original first; a match never overlaps one already taken.
+      hits.sort((a, b) => b.original.length - a.original.length || a.start - b.start);
+      const taken = new Uint8Array(seg.length);
+      const chosen: typeof hits = [];
+      for (const h of hits) {
+        let free = true;
+        for (let i = h.start; i < h.end; i++) if (taken[i]) { free = false; break; }
+        if (!free) continue;
+        taken.fill(1, h.start, h.end);
+        chosen.push(h);
       }
-      segments[idx] = seg;
+      chosen.sort((a, b) => a.start - b.start);
+      const parts: string[] = [];
+      let at = 0;
+      for (const h of chosen) {
+        parts.push(seg.slice(at, h.start), mapping[h.original]);
+        at = h.end;
+      }
+      parts.push(seg.slice(at));
+      segments[idx] = parts.join('');
+      residualSweeps += chosen.length;
     }
   }
 
@@ -225,6 +238,68 @@ export async function replaceSpans(
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Finds many originals in a text in ONE pass. Testing each original against
+ * the whole text (as the sweep and validation used to) costs originals x
+ * text: 12-20 s on a 2 MB note or a 20k-row survey.
+ *
+ * Originals that start with a word character are indexed by that leading
+ * word ("Karoline" for "Karoline Stenberg"); every word of the text is looked
+ * up, and a hit is confirmed with a sticky regex at that position. The match
+ * rules are exactly those of the regexes they replace:
+ *   sweep:    (?<!\w) original (?!\w)
+ *   validate: (?:^|\b|\s) original (?:$|\b|\s)
+ * Originals starting with another character ("+44 …") are rare and checked
+ * one by one with the full regex.
+ */
+export class OriginalFinder {
+  private byKey = new Map<string, Array<{ original: string; re: RegExp }>>();
+  private others: Array<{ original: string; re: RegExp }> = [];
+
+  constructor(originals: string[], semantics: 'sweep' | 'validate') {
+    const suffix = semantics === 'sweep' ? '(?!\\w)' : '(?:$|\\b|\\s)';
+    const prefix = semantics === 'sweep' ? '(?<!\\w)' : '(?:^|\\b|\\s)';
+    for (const original of new Set(originals)) {
+      const pattern = flexibleWhitespacePattern(original);
+      if (!pattern) continue;
+      const key = original.trim().match(/^\w+/)?.[0];
+      if (key) {
+        const list = this.byKey.get(key) ?? [];
+        list.push({ original, re: new RegExp(`${pattern}${suffix}`, 'y') });
+        this.byKey.set(key, list);
+      } else {
+        this.others.push({ original, re: new RegExp(`${prefix}${pattern}${suffix}`, 'g') });
+      }
+    }
+  }
+
+  /** Every match: start, end and which original. */
+  findAll(text: string): Array<{ start: number; end: number; original: string }> {
+    const out: Array<{ start: number; end: number; original: string }> = [];
+    if (this.byKey.size > 0) {
+      const words = /\w+/g;
+      let m: RegExpExecArray | null;
+      while ((m = words.exec(text))) {
+        const candidates = this.byKey.get(m[0]);
+        if (!candidates) continue;
+        for (const c of candidates) {
+          c.re.lastIndex = m.index;
+          const hit = c.re.exec(text);
+          // A trailing \s in the validate suffix is consumed; don't count it.
+          if (hit) out.push({ start: m.index, end: m.index + hit[0].trimEnd().length, original: c.original });
+        }
+      }
+    }
+    for (const c of this.others) {
+      c.re.lastIndex = 0;
+      for (const hit of text.matchAll(c.re)) {
+        out.push({ start: hit.index!, end: hit.index! + hit[0].trimEnd().length, original: c.original });
+      }
+    }
+    return out;
+  }
 }
 
 /** Escape an original for regex use, with any internal whitespace run matching \s+. */

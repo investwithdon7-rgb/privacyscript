@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { Brand } from '@/components/Brand';
 import { DropZone } from '@/components/DropZone';
 import { NerBanner } from '@/components/NerBanner';
+import { WordListPanel } from '@/components/WordListPanel';
 import { ComplianceModeSelector } from '@/components/ComplianceModeSelector';
 import type { Mode } from '@/lib/constants';
 import type { ComplianceProfileId } from '@/lib/constants';
@@ -161,8 +162,9 @@ export default function LandingPage() {
           <h2 className="mono text-xs uppercase tracking-widest text-[color:var(--color-muted)]">
             Step 2. Upload or paste a record
           </h2>
+          <WordListPanel />
           <DropZone
-            accept=".txt,.vtt,.srt,.json,.hl7,.pdf,.docx,.csv,.tsv,.xlsx,.sav,.dcm,.dicom"
+            accept=".txt,.vtt,.srt,.json,.ndjson,.hl7,.pdf,.docx,.csv,.tsv,.xlsx,.sav,.dcm,.dicom,.jpg,.jpeg,.png,.webp"
             disabled={false}
             onFile={onFile}
           />
