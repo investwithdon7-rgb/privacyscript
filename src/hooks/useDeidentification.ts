@@ -3,6 +3,7 @@
 import { detect, type Span } from '@/engine/detect';
 import { getNerStatus, modelsFor, NER_MODELS, NerCancelledError, runClinicalNER } from '@/engine/ner';
 import { ruleCoveredLeaves, runNerOnLeaves } from '@/engine/ner-leaves';
+import { currentWordList, wordListSpans } from '@/engine/wordlist';
 import { replaceSpans, type ReplacementResult } from '@/engine/replace';
 import { assessRisk, type RiskAssessment } from '@/engine/risk';
 import { validate } from '@/engine/validate';
@@ -312,6 +313,8 @@ export async function ingestAndDetect(file: File): Promise<void> {
     // IDs and speaker labels are masked (speakers are handled by rules).
     const nerModels = modelsFor(text);
     updateSession({ nerModels: nerModels.map((m) => NER_MODELS[m].id) });
+    // Study word list: terms the user knows identify someone.
+    forcedSpans = [...forcedSpans, ...wordListSpans(text, currentWordList())];
     const onNerProgress = (done: number, total: number) =>
       updateSession({ nerProgress: { phase: 'detect', done, total } });
     // Structured inputs: each distinct field value is read once.
@@ -835,6 +838,13 @@ export async function finalise(): Promise<void> {
     const tabularNotes = tab && tabularOut ? tabularAuditNotes(tab, tabularOut) : [];
     if (tr) tabularNotes.push(...transcriptAuditNotes(tr));
     if (dicomOut) tabularNotes.push(...dicomOut.notes);
+    const wordList = currentWordList();
+    if (wordList.length) {
+      // Counts only: the terms themselves identify people.
+      tabularNotes.push(
+        `Study word list: ${wordList.length} term(s), ${wordListSpans(s.originalText, wordList).length} match(es) hidden.`
+      );
+    }
     if (imageOut) {
       const img = s.parsedOriginal as ImageIngest;
       // Field names only, never values.
