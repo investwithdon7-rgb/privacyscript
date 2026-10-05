@@ -190,8 +190,14 @@ Every record goes through these stages in order. Each stage is independently log
 | CSV (records + survey exports) | Papa Parse | Column plan + span engine, see Survey datasets | v1 |
 | XLSX (survey exports) | jszip (first worksheet) | Output as CSV | v1 |
 | SPSS .sav | Custom reader (uncompressed + bytecode; not .zsav) | Output as CSV, codes kept; variable labels guide column roles | v1 |
-| DICOM | Own codec (`src/formats/dicom.ts`): implicit/explicit LE, deflate, encapsulated copied | Rebuilt to PS3.15 Annex E (UIDs → 2.25.HMAC, dates shifted/year, privates removed); burned-in text OCR'd and blacked out (uncompressed only, `dicom-ocr.ts`) | v1 |
-| Photos (JPEG/PNG/WebP) | `src/formats/image.ts` | All metadata removed losslessly (GPS, owner, serials, thumbnail); orientation kept; picture unchanged, user confirms | v1 |
+| DICOM | Own codec (`src/formats/dicom.ts`): implicit/explicit LE, deflate, encapsulated copied | Rebuilt to PS3.15 Annex E (UIDs → 2.25.HMAC, dates shifted/year, privates removed); burned-in text OCR'd and blacked out in every frame (`dicom-ocr.ts`): uncompressed, or baseline JPEG decoded by the browser and written uncompressed. JPEG 2000/LS: warning only | v1 |
+| Photos (JPEG/PNG/WebP) | `src/formats/image.ts` | All metadata removed losslessly (GPS, owner, serials, thumbnail); orientation kept. Faces found by bundled UltraFace (`faces.ts`, `public/models/`, 1.2 MB) and covered by default (re-saves the picture) | v1 |
+| FHIR bulk (.ndjson) | `parseFhir` (one resource per line) | One line per resource out; lines processed together for consistent codes | v1 |
+
+Cross-format options:
+- **Study word list** (`src/engine/wordlist.ts`): user terms hidden in every file; in tab memory only, saved/loaded as a text file by the user.
+- **Realistic replacements** (`src/engine/surrogate.ts`): optional fake names/places/numbers (reserved fictional ranges); same person = same fake across the session; key file maps them back in pseudonymise mode. Codes stay the default.
+- **Connections panel** (`NetworkLedger.tsx`): hosts the tab fetched from, read from the browser's resource timing.
 
 ### Survey datasets (CSV / XLSX) — `src/engine/tabular.ts`
 
