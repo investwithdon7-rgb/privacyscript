@@ -29,6 +29,22 @@ export interface NERStatus {
   loadProgress: number;
   message: string;
   error: string | null;
+  /** Hosts the background worker fetched from (model files), for the network ledger. */
+  networkHosts?: string[];
+}
+
+/** Hosts this context (page or worker) has fetched resources from. */
+export function contactedHosts(): string[] {
+  if (typeof performance === 'undefined' || !performance.getEntriesByType) return [];
+  const hosts = new Set<string>();
+  for (const e of performance.getEntriesByType('resource')) {
+    try {
+      hosts.add(new URL(e.name).host);
+    } catch {
+      /* blob: / data: entries */
+    }
+  }
+  return Array.from(hosts);
 }
 
 export const NER_STATUS_INITIAL: NERStatus = {

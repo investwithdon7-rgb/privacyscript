@@ -12,6 +12,7 @@
  */
 
 import {
+  contactedHosts,
   downloadNotice,
   loadNerPipeline,
   nerOnText,
@@ -42,7 +43,7 @@ function pipeline(key: NerModelKey) {
       (pipe) => {
         ctx.postMessage({
           type: 'status',
-          patch: { loaded: true, loadProgress: 100, message: 'NER model ready.', error: null },
+          patch: { loaded: true, loadProgress: 100, message: 'NER model ready.', error: null, networkHosts: contactedHosts() },
         });
         return pipe;
       },

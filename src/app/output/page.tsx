@@ -6,6 +6,7 @@ import { Brand } from '@/components/Brand';
 import { JourneySteps } from '@/components/JourneySteps';
 import { DiffViewer } from '@/components/DiffViewer';
 import { DownloadPanel } from '@/components/DownloadPanel';
+import { NetworkLedger } from '@/components/NetworkLedger';
 import { useSession } from '@/hooks/useSession';
 import { resetSession } from '@/state/session';
 
@@ -60,6 +61,7 @@ export default function OutputPage() {
         </div>
 
         <DownloadPanel mode={s.mode} />
+        <NetworkLedger />
 
         <h2 className="mt-10 text-lg font-semibold">Preview</h2>
         {s.deidentifiedOutput ? (
