@@ -134,8 +134,8 @@ export async function ingestAndDetect(file: File): Promise<void> {
     switch (confirmedFormat) {
       case 'FHIR_R4': {
         const raw = await readFileAsText(file);
-        const { resource, leaves } = parseFhir(raw);
-        parsedOriginal = { resource, leaves };
+        const { resource, leaves, ndjson } = parseFhir(raw);
+        parsedOriginal = { resource, leaves, ndjson };
         text = leaves.map((l) => l.value).join(LEAF_DELIM);
         forcedSpans = buildForcedSpans(
           leafInfo,
@@ -1069,6 +1069,7 @@ async function reconstructOutput(
       const parsed = s.parsedOriginal as {
         resource: unknown;
         leaves: Array<{ path: string; value: string; referencePrefix?: string }>;
+        ndjson?: boolean;
       };
       const parts = replacement.text.split(LEAF_DELIM);
       const replaced = parsed.leaves.map((leaf, i) => ({
@@ -1076,7 +1077,7 @@ async function reconstructOutput(
         replacement: parts[i] ?? leaf.value,
         referencePrefix: leaf.referencePrefix,
       }));
-      return { textOutput: reconstructFhir(parsed.resource, replaced) };
+      return { textOutput: reconstructFhir(parsed.resource, replaced, parsed.ndjson) };
     }
     case 'HL7_V2': {
       const parsed = s.parsedOriginal as {

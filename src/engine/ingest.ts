@@ -39,7 +39,7 @@ export function detectFormat(filename: string, content: string): RecordFormat {
   if (ext === 'hl7') return 'HL7_V2';
   if (ext === 'dcm' || ext === 'dicom') return 'DICOM';
   if (IMAGE_EXTENSIONS.has(ext ?? '')) return 'IMAGE';
-  if (ext === 'json') {
+  if (ext === 'json' || ext === 'ndjson') {
     return looksLikeFhir(content) ? 'FHIR_R4' : 'TEXT';
   }
   if (ext === 'pdf') return 'PDF_TYPED'; // PDF subtype resolved later in the PDF pipeline

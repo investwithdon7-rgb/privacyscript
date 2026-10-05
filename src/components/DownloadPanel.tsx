@@ -44,9 +44,11 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
   const isDocx = s.format === 'DOCX';
   // Transcripts keep their caption format (.vtt / .srt) so players still load them.
   const sourceExt = (s.filename ?? '').split('.').pop()?.toLowerCase() ?? '';
-  // Transcripts and photos keep their own extension (.vtt, .srt, .jpg, .png).
+  // Transcripts, photos and bulk FHIR keep their own extension (.vtt, .jpg, .ndjson).
   const keepTextExt =
-    (s.format === 'TEXT' && ['vtt', 'srt', 'md'].includes(sourceExt)) || s.format === 'IMAGE';
+    (s.format === 'TEXT' && ['vtt', 'srt', 'md'].includes(sourceExt)) ||
+    s.format === 'IMAGE' ||
+    (s.format === 'FHIR_R4' && sourceExt === 'ndjson');
   const ext = isDocx
     ? docxExt(s.docxFormat)
     : keepTextExt
@@ -58,6 +60,8 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
       ? 'text/vtt'
       : s.format === 'IMAGE'
       ? `image/${sourceExt === 'jpg' ? 'jpeg' : sourceExt}`
+      : sourceExt === 'ndjson'
+      ? 'application/fhir+ndjson'
       : MIME[s.format ?? 'TEXT'] ?? 'text/plain';
 
   const downloadRecord = () => {

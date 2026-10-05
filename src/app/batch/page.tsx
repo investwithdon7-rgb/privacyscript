@@ -176,7 +176,7 @@ export default function BatchPage() {
                   type="file"
                   multiple
                   className="hidden"
-                  accept=".txt,.md,.vtt,.srt,.json,.hl7,.docx"
+                  accept=".txt,.md,.vtt,.srt,.json,.ndjson,.hl7,.docx"
                   onChange={(e) => handleFiles(e.target.files)}
                 />
                 <div className="text-lg font-semibold mb-2">Drop files or click to add</div>

@@ -164,7 +164,7 @@ export default function LandingPage() {
           </h2>
           <WordListPanel />
           <DropZone
-            accept=".txt,.vtt,.srt,.json,.hl7,.pdf,.docx,.csv,.tsv,.xlsx,.sav,.dcm,.dicom,.jpg,.jpeg,.png,.webp"
+            accept=".txt,.vtt,.srt,.json,.ndjson,.hl7,.pdf,.docx,.csv,.tsv,.xlsx,.sav,.dcm,.dicom,.jpg,.jpeg,.png,.webp"
             disabled={false}
             onFile={onFile}
           />
