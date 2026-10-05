@@ -7,6 +7,7 @@ export type RecordFormat =
   | 'DOCX'
   | 'CSV'
   | 'DICOM'
+  | 'IMAGE'
   | 'UNKNOWN';
 
 export interface IngestResult {
@@ -25,6 +26,9 @@ export interface IngestResult {
 
 const HL7_SEGMENT_RE = /^MSH\|/;
 
+/** Photos (HEIC/TIFF are recognised so the user gets a clear "convert it" message). */
+export const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'heic', 'heif', 'tif', 'tiff']);
+
 /**
  * Decide which format an uploaded file is. Uses extension first, then a
  * content sniff for robustness.
@@ -34,6 +38,7 @@ export function detectFormat(filename: string, content: string): RecordFormat {
 
   if (ext === 'hl7') return 'HL7_V2';
   if (ext === 'dcm' || ext === 'dicom') return 'DICOM';
+  if (IMAGE_EXTENSIONS.has(ext ?? '')) return 'IMAGE';
   if (ext === 'json') {
     return looksLikeFhir(content) ? 'FHIR_R4' : 'TEXT';
   }

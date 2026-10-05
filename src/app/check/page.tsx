@@ -138,7 +138,7 @@ export default function ComplianceCheckPage() {
           ) : (
             <>
               <DropZone
-                accept=".txt,.vtt,.srt,.json,.hl7,.pdf,.docx,.csv,.tsv,.xlsx,.sav,.dcm,.dicom"
+                accept=".txt,.vtt,.srt,.json,.hl7,.pdf,.docx,.csv,.tsv,.xlsx,.sav,.dcm,.dicom,.jpg,.jpeg,.png,.webp"
                 disabled={processing}
                 onFile={onFile}
               />

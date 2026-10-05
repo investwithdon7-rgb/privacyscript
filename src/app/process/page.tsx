@@ -428,6 +428,7 @@ const FRIENDLY: Record<string, string> = {
   NHS_NUMBER: 'NHS numbers',
   MRN: 'Record numbers',
   REFERENCE_ID: 'Reference numbers',
+  DEVICE_ID: 'Device serial numbers',
   URL: 'Web links',
   IP: 'IP addresses',
   ETHNICITY: 'Ethnicity',

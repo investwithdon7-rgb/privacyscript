@@ -75,6 +75,7 @@ const SKIP_REASONS: Partial<Record<RecordFormat, string>> = {
   PDF_TYPED: 'PDFs go through the page-by-page pipeline. Open this file on its own.',
   PDF_SCANNED: 'PDFs go through the page-by-page pipeline. Open this file on its own.',
   DICOM: 'DICOM images need the imaging pipeline. Open this file on its own.',
+  IMAGE: 'Photos need their own check (what the picture shows). Open this file on its own.',
 };
 
 function extensionOf(name: string): string {

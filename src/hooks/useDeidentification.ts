@@ -7,13 +7,14 @@ import { replaceSpans, type ReplacementResult } from '@/engine/replace';
 import { assessRisk, type RiskAssessment } from '@/engine/risk';
 import { validate } from '@/engine/validate';
 import { buildAuditLog } from '@/engine/output';
-import { detectFormat, readFileAsText, type RecordFormat } from '@/engine/ingest';
+import { detectFormat, IMAGE_EXTENSIONS, readFileAsText, type RecordFormat } from '@/engine/ingest';
 import { parseFhir, reconstructFhir, forcedLabelForFhirPath } from '@/formats/fhir';
 import { parseHL7, reconstructHL7, forcedLabelForHl7Leaf, type HL7Leaf } from '@/formats/hl7';
 import type { DocxIngestResult } from '@/formats/docx';
 import type { PdfIngest, PdfRedaction } from '@/formats/pdf-typed';
 import type { CsvIngest, CsvLeaf } from '@/formats/csv';
 import type { DicomIngest, DicomRebuildResult } from '@/formats/dicom';
+import type { ImageFinding, ImageIngest } from '@/formats/image';
 import type { IdentifierLabel } from '@/lib/identifiers';
 import type { ScannedPdfIngest, ScannedRedaction, ScanProgress } from '@/formats/pdf-scanned';
 import { generateSessionSecret } from '@/engine/crypto';
@@ -260,6 +261,21 @@ export async function ingestAndDetect(file: File): Promise<void> {
           dicom.leaves.map((l) => l.value),
           (i) => dicom.leaves[i].label
         );
+        break;
+      }
+      case 'IMAGE': {
+        // Photo metadata: every block is removed on output; the values are
+        // shown for review and forced so they count as found.
+        sourceBytes = await file.arrayBuffer();
+        const { ingestImage } = await import('@/formats/image');
+        const img = ingestImage(sourceBytes);
+        parsedOriginal = img;
+        const values = img.findings.map((f) => f.value || f.field);
+        text = values.join(LEAF_DELIM);
+        forcedSpans = buildForcedSpans(leafInfo, values, (i) => imageFindingLabel(img.findings[i]));
+        // Every field is removed whatever it says: no need for the name model
+        // to ask about "Apple" (the camera make).
+        values.forEach((_, i) => leafInfo.forced.add(i));
         break;
       }
       default:
@@ -540,6 +556,7 @@ function profileForComplianceAction(
  */
 function detectInitialFormat(file: File): RecordFormat {
   const ext = file.name.split('.').pop()?.toLowerCase();
+  if (IMAGE_EXTENSIONS.has(ext ?? '')) return 'IMAGE';
   if (ext === 'pdf') return 'PDF_TYPED';
   if (ext === 'docx') return 'DOCX';
   if (ext === 'hl7') return 'HL7_V2';
@@ -554,7 +571,7 @@ function detectInitialFormat(file: File): RecordFormat {
  * content. Returns the initial guess unchanged for binary formats.
  */
 async function confirmFormat(file: File, initial: RecordFormat): Promise<RecordFormat> {
-  if (initial === 'PDF_TYPED' || initial === 'DOCX' || initial === 'CSV' || initial === 'HL7_V2') {
+  if (initial === 'PDF_TYPED' || initial === 'DOCX' || initial === 'CSV' || initial === 'HL7_V2' || initial === 'IMAGE') {
     return initial;
   }
   // Read up to 4 KB for sniffing (avoids reading a potentially large file twice).
@@ -685,6 +702,12 @@ export async function finalise(): Promise<void> {
         mapping: { ...replacement.mapping, ...dicomOut.uidMapping },
       };
     }
+    // Photos: drop every metadata block (lossless).
+    let imageOut: Uint8Array | null = null;
+    if (s.format === 'IMAGE') {
+      const { stripImage } = await import('@/formats/image');
+      imageOut = stripImage(s.parsedOriginal as ImageIngest);
+    }
     updateSession({ replacement: finalReplacement, stageIndex: 3 });
 
     // Stage 4: RISK
@@ -710,6 +733,16 @@ export async function finalise(): Promise<void> {
       );
     }
     if (dicomOut) risk = withBurnedInRisk(risk, s.parsedOriginal as DicomIngest);
+    if (imageOut) {
+      risk = {
+        ...risk,
+        level: 'HIGH',
+        reasons: [
+          'Hidden details (location, names, camera serial numbers, thumbnail) were removed, but the picture itself was not changed. Check it shows no face, name, wristband, screen or document before sharing.',
+          ...risk.reasons,
+        ],
+      };
+    }
     updateSession({ risk, stageIndex: 4 });
 
     // Stage 5: VALIDATE
@@ -764,12 +797,22 @@ export async function finalise(): Promise<void> {
       validation.originalsLeaked = Array.from(new Set([...fieldCheck.originalsLeaked, ...fileCheck.originalsLeaked]));
       validation.passed = validation.originalsLeaked.length === 0;
     }
+    if (imageOut) {
+      // Validate the bytes that will be downloaded: no metadata may remain
+      // (a kept orientation is not a finding).
+      const { ingestImage } = await import('@/formats/image');
+      const left = ingestImage(imageOut.slice().buffer).findings;
+      validation.originalsLeaked = left.map((f) => f.field);
+      validation.passed = left.length === 0;
+    }
     validation.nerLeaks = keptPossibleNames(s, validationText);
     updateSession({ validation, stageIndex: 5 });
 
     // Stage 6: OUTPUT
     const { textOutput, bytesOutput } = dicomOut
       ? { textOutput: undefined, bytesOutput: dicomOut.bytes }
+      : imageOut
+      ? { textOutput: undefined, bytesOutput: imageOut }
       : tabularOut
       ? {
           textOutput: (await import('papaparse')).default.unparse(tabularOut.rows, {
@@ -781,6 +824,15 @@ export async function finalise(): Promise<void> {
     const tabularNotes = tab && tabularOut ? tabularAuditNotes(tab, tabularOut) : [];
     if (tr) tabularNotes.push(...transcriptAuditNotes(tr));
     if (dicomOut) tabularNotes.push(...dicomOut.notes);
+    if (imageOut) {
+      const img = s.parsedOriginal as ImageIngest;
+      // Field names only, never values.
+      tabularNotes.push(
+        img.findings.length
+          ? `Photo: removed ${img.findings.map((f) => f.field).join(', ')}. Picture data copied unchanged${img.orientation && img.orientation !== 1 ? '; orientation kept' : ''}.`
+          : 'Photo: no hidden details found. Picture data copied unchanged.'
+      );
+    }
     tabularNotes.push(
       getNerStatus().error
         ? `Name detection: model could not load (${getNerStatus().error}); rules ran alone.`
@@ -839,6 +891,16 @@ function keptPossibleNames(s: ReturnType<typeof getSession>, output: string) {
     seen.add(word);
     return new RegExp(`(?<![\\p{L}\\d])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\d])`, 'u').test(output);
   });
+}
+
+/** Forced label for a photo metadata field (for counting; all are removed). */
+function imageFindingLabel(f: ImageFinding): IdentifierLabel | null {
+  if (f.field === 'GPS location') return 'ADDRESS_LINE';
+  if (/owner|artist|author|creator/i.test(f.field)) return 'NAME';
+  if (/date/i.test(f.field)) return 'DATE';
+  if (/serial|unique image id/i.test(f.field)) return 'DEVICE_ID';
+  if (/comment|description|title|subject|keywords|^text:/i.test(f.field)) return 'REFERENCE_ID';
+  return null;
 }
 
 /**

@@ -44,7 +44,9 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
   const isDocx = s.format === 'DOCX';
   // Transcripts keep their caption format (.vtt / .srt) so players still load them.
   const sourceExt = (s.filename ?? '').split('.').pop()?.toLowerCase() ?? '';
-  const keepTextExt = s.format === 'TEXT' && ['vtt', 'srt', 'md'].includes(sourceExt);
+  // Transcripts and photos keep their own extension (.vtt, .srt, .jpg, .png).
+  const keepTextExt =
+    (s.format === 'TEXT' && ['vtt', 'srt', 'md'].includes(sourceExt)) || s.format === 'IMAGE';
   const ext = isDocx
     ? docxExt(s.docxFormat)
     : keepTextExt
@@ -54,6 +56,8 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
     ? docxMime(s.docxFormat)
     : keepTextExt && sourceExt === 'vtt'
       ? 'text/vtt'
+      : s.format === 'IMAGE'
+      ? `image/${sourceExt === 'jpg' ? 'jpeg' : sourceExt}`
       : MIME[s.format ?? 'TEXT'] ?? 'text/plain';
 
   const downloadRecord = () => {
