@@ -11,6 +11,7 @@ import { SpanEditor } from '@/components/SpanEditor';
 import { SurveyColumnsPanel } from '@/components/SurveyColumnsPanel';
 import { TranscriptPanel } from '@/components/TranscriptPanel';
 import { ScanStages } from '@/components/ScanStages';
+import { OriginBanner } from '@/components/OriginBanner';
 import { ReplacementStyleChoice } from '@/components/ReplacementStyleChoice';
 import { cancelNer } from '@/engine/ner';
 import type { TranscriptState } from '@/engine/transcript';
@@ -397,6 +398,20 @@ export default function ProcessPage() {
                   : `Work through the ${steps.length} steps below. Only the current step is open.`}
               </p>
             </div>
+            {s.origin && s.mode && (
+              <OriginBanner
+                origin={s.origin}
+                profile={s.complianceProfile ?? 'GDPR_PSEUDO'}
+                mode={s.mode}
+                onSwitch={(id) => {
+                  // Stricter profiles hide every quasi-identifier by default.
+                  const quasi = COMPLIANCE_PROFILES[id].suppressAllQuasi
+                    ? new Set(s.detection!.quasiSpans.map((q) => q.label))
+                    : s.quasiToRedact;
+                  updateSession({ complianceProfile: id, quasiToRedact: quasi });
+                }}
+              />
+            )}
 
             {finalising ? (
               <div className="rounded-2xl p-6 mt-6" style={{ border: '1px solid #4F46E5', background: 'rgba(79,70,229,0.06)' }}>
@@ -465,5 +480,10 @@ const FRIENDLY: Record<string, string> = {
 };
 
 function friendlyLabel(label: string): string {
+  if (label.startsWith('NATIONAL_ID') || label === 'SSN' || label === 'UK_NINO') return 'National ID numbers';
+  if (label === 'INSURANCE_ID') return 'Insurance numbers';
+  if (label === 'IBAN' || label === 'ACCOUNT_NUMBER') return 'Bank and account numbers';
+  if (label === 'PASSPORT') return 'Passport numbers';
+  if (label === 'LICENSE') return 'Licence and registration numbers';
   return FRIENDLY[label] ?? label.toLowerCase().replace(/_/g, ' ');
 }

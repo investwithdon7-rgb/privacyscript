@@ -2,6 +2,7 @@ import type { Mode } from '@/lib/constants';
 import type { IdentifierLabel } from '@/lib/identifiers';
 import type { Span } from '@/engine/detect';
 import { generatePseudonym, type SessionSecret } from '@/engine/crypto';
+import { EU_DATE_SHAPE, euMonth, euMonthName } from '@/lib/identifiers-eu';
 
 export interface ReplacementResult {
   text: string;
@@ -356,12 +357,45 @@ function shiftDate(token: string, shiftDays: number, hint: DateFormatHint): stri
   if (!parsed) return null;
   const ms = parsed.date.getTime() + shiftDays * 86_400_000;
   const d = new Date(ms);
-  return formatLikeInput(d, parsed.format);
+  return parsed.rebuild ? parsed.rebuild(d) : formatLikeInput(d, parsed.format);
 }
 
 interface ParsedDate {
   date: Date;
   format: 'ISO' | 'DMY' | 'MDY' | 'MONTH_NAME_DMY' | 'MONTH_NAME_MDY' | 'UNKNOWN';
+  /** Writes a new date in the input's own style (EU month names, separators). */
+  rebuild?: (d: Date) => string;
+}
+
+const EU_DATE_RE = new RegExp(`^${EU_DATE_SHAPE}$`, 'iu');
+
+/** "12 de marzo de 2024", "12. März 2024", "12 maart 2024"... */
+function parseEuDate(token: string): ParsedDate | null {
+  const m = token.match(EU_DATE_RE);
+  if (!m) return null;
+  const month = euMonth(m[3], token);
+  if (!month) return null;
+  const date = makeDate(+m[4], month.month, +m[1], 'MONTH_NAME_DMY');
+  if (!date) return null;
+  const dayAt = token.indexOf(m[1]);
+  const monthAt = token.indexOf(m[3], dayAt + m[1].length);
+  const yearAt = token.lastIndexOf(m[4]);
+  return {
+    ...date,
+    rebuild: (d) =>
+      String(d.getUTCDate()).padStart(m[1].length, '0') +
+      token.slice(dayAt + m[1].length, monthAt) +
+      euMonthName(d.getUTCMonth() + 1, month, m[3]) +
+      token.slice(monthAt + m[3].length, yearAt) +
+      String(d.getUTCFullYear()),
+  };
+}
+
+/** Numeric dates keep their separator ("12.03.2024" stays dotted). */
+function withSeparator(token: string, parsed: ParsedDate | null): ParsedDate | null {
+  const sep = token.match(/^\d{1,2}([.\-\/])\d{1,2}\1\d{2,4}$/)?.[1];
+  if (!parsed || !sep || sep === '/' || (parsed.format !== 'DMY' && parsed.format !== 'MDY')) return parsed;
+  return { ...parsed, rebuild: (d) => formatLikeInput(d, parsed.format).replace(/\//g, sep) };
 }
 
 /**
@@ -388,6 +422,12 @@ const DATE_LOOSE_RE = new RegExp(
 );
 
 function parseLooseDate(token: string, hint: DateFormatHint = 'DMY'): ParsedDate | null {
+  const eu = parseEuDate(token);
+  if (eu) return eu;
+  return withSeparator(token, parseLooseDateCore(token, hint));
+}
+
+function parseLooseDateCore(token: string, hint: DateFormatHint): ParsedDate | null {
   const m = token.match(DATE_LOOSE_RE);
   if (!m || !m.groups) return null;
   const g = m.groups;

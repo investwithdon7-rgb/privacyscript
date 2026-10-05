@@ -26,6 +26,8 @@ export interface Span {
    * kept as REFERENCE_ID but must lose to an overlapping PHONE match).
    */
   priorityOverride?: number;
+  /** ISO country of a national identifier (jurisdiction suggestion). */
+  country?: string;
 }
 
 export interface DetectionResult {
@@ -80,6 +82,9 @@ export function runRules(text: string): Span[] {
       let captureEnd =
         capture && captureIdx >= 0 ? captureStart! + capture.length : undefined;
       let spanEnd = m.index + m[0].length;
+      // Checksummed identifiers (PESEL, BSN, NIR…): a number of the right
+      // shape that fails its check is not that identifier.
+      if (rule.validate && !rule.validate(capture ?? m[0])) continue;
 
       // Special filter: NAME captures — case-insensitive rules ('gi') lose
       // the capitalisation guard baked into the pattern, so "specialist nurse
@@ -148,6 +153,7 @@ export function runRules(text: string): Span[] {
         captureEnd,
         rareTier,
         priorityOverride,
+        country: rule.country,
       });
     }
   }

@@ -83,6 +83,8 @@ export interface SessionState {
   replacementStyle: 'codes' | 'realistic';
   /** Photos: cover faces found in the picture (default on). */
   coverFaces: boolean;
+  /** Detected language and likely country (a suggestion the user confirms). */
+  origin: import('@/engine/jurisdiction').OriginSuggestion | null;
   /** User confirmed they will review the unreadable passages themselves (PARTIAL only). */
   scriptAcknowledged: boolean;
   /** Progress within the 6 pipeline stages, 0–6. */
@@ -126,6 +128,7 @@ const INITIAL: SessionState = {
   nerModels: [],
   replacementStyle: 'codes',
   coverFaces: true,
+  origin: null,
   stageIndex: 0,
   quasiConfirmed: false,
   error: null,
