@@ -108,6 +108,31 @@ export function downloadText(text: string, filename: string, mime = 'text/plain'
  * The report contains no original PHI — only metadata, counts, risk scores,
  * and regulation references. Safe to include in ethics board submissions.
  */
+const PDF_REPLACEMENTS: Record<string, string> = {
+  '∞': 'infinite',
+  '→': '->',
+  '←': '<-',
+  '≥': '>=',
+  '≤': '<=',
+  '✓': 'yes',
+  '✗': 'no',
+  '·': '-',
+};
+
+/** Text the standard (WinAnsi) PDF fonts can draw. */
+export function pdfSafe(text: string): string {
+  return Array.from(text)
+    .map((c) => {
+      if (PDF_REPLACEMENTS[c]) return PDF_REPLACEMENTS[c];
+      const code = c.codePointAt(0)!;
+      if ((code >= 0x20 && code <= 0x7e) || (code >= 0xa0 && code <= 0xff)) return c;
+      // Windows-1252 extras the fonts do have: quotes, dashes, ellipsis, bullet, euro.
+      if ('‘’“”–—…•€'.includes(c)) return c;
+      return '?';
+    })
+    .join('');
+}
+
 export async function generateComplianceReportPdf(
   audit: AuditLog,
   nerLeakCount: number,
@@ -122,7 +147,9 @@ export async function generateComplianceReportPdf(
   // Colour palette (all as rgb(0..1))
   const indigo = rgb(0.31, 0.27, 0.9);
   const darkBg = rgb(0.04, 0.04, 0.08);
-  const textPrimary = rgb(1, 1, 1);
+  // Body text is dark on the white page; white only on the dark header strip.
+  const textPrimary = rgb(0.06, 0.09, 0.16);
+  const textOnDark = rgb(1, 1, 1);
   const textMuted = rgb(0.58, 0.64, 0.72);
   const success = rgb(0.06, 0.73, 0.51);
   const danger = rgb(0.94, 0.27, 0.27);
@@ -134,6 +161,9 @@ export async function generateComplianceReportPdf(
 
   let page = doc.addPage([W, H]);
   let y = H - margin;
+  // The standard PDF fonts only encode WinAnsi: "∞", "→" or "≥" in a note
+  // made the whole report fail. Every string is cleaned where it is drawn.
+  const put = (text: string, opts: Parameters<typeof page.drawText>[1]): void => page.drawText(pdfSafe(text), opts);
 
   const drawText = (
     text: string,
@@ -158,8 +188,8 @@ export async function generateComplianceReportPdf(
     let line = '';
     for (const word of words) {
       const test = line ? `${line} ${word}` : word;
-      if (font.widthOfTextAtSize(test, size) > maxWidth && line) {
-        page.drawText(line, { x, y, size, font, color });
+      if (font.widthOfTextAtSize(pdfSafe(test), size) > maxWidth && line) {
+        put(line, { x, y, size, font, color });
         y -= size + 4;
         checkPageBreak(size + 8);
         line = word;
@@ -168,7 +198,7 @@ export async function generateComplianceReportPdf(
       }
     }
     if (line) {
-      page.drawText(line, { x, y, size, font, color });
+      put(line, { x, y, size, font, color });
       y -= size + 4;
     }
   };
@@ -179,7 +209,7 @@ export async function generateComplianceReportPdf(
       y = H - margin;
       // Repeat header strip on new pages
       page.drawRectangle({ x: 0, y: H - 28, width: W, height: 28, color: darkBg });
-      page.drawText(`${ENGINE_NAME} — Compliance Report`, {
+      put(`${ENGINE_NAME} — Compliance Report`, {
         x: margin, y: H - 19, size: 8, font: regular, color: textMuted,
       });
     }
@@ -187,13 +217,13 @@ export async function generateComplianceReportPdf(
 
   // ── Cover strip ────────────────────────────────────────────────────────
   page.drawRectangle({ x: 0, y: H - 80, width: W, height: 80, color: darkBg });
-  page.drawText('COMPLIANCE REPORT', {
+  put('COMPLIANCE REPORT', {
     x: margin, y: H - 32, size: 10, font: bold, color: indigo,
   });
-  page.drawText(`${ENGINE_NAME} · v${audit.engineVersion}`, {
-    x: margin, y: H - 48, size: 10, font: regular, color: textPrimary,
+  put(`${ENGINE_NAME} · v${audit.engineVersion}`, {
+    x: margin, y: H - 48, size: 10, font: regular, color: textOnDark,
   });
-  page.drawText(`Generated: ${new Date(audit.timestamp).toLocaleString()} (UTC)`, {
+  put(`Generated: ${new Date(audit.timestamp).toLocaleString()} (UTC)`, {
     x: margin, y: H - 62, size: 8, font: regular, color: textMuted,
   });
   y = H - 100;
@@ -203,7 +233,7 @@ export async function generateComplianceReportPdf(
     y -= 14;
     checkPageBreak(30);
     page.drawRectangle({ x: margin - 4, y: y - 2, width: contentW + 8, height: 18, color: darkBg });
-    page.drawText(title.toUpperCase(), {
+    put(title.toUpperCase(), {
       x: margin, y: y + 3, size: 8, font: bold, color: indigo,
     });
     y -= 20;
@@ -211,8 +241,8 @@ export async function generateComplianceReportPdf(
 
   const row = (label: string, value: string, valueColor = textPrimary) => {
     checkPageBreak(14);
-    page.drawText(label, { x: margin, y, size: 9, font: regular, color: textMuted });
-    page.drawText(value, { x: margin + 170, y, size: 9, font: regular, color: valueColor });
+    put(label, { x: margin, y, size: 9, font: regular, color: textMuted });
+    put(value, { x: margin + 170, y, size: 9, font: regular, color: valueColor });
     y -= 14;
   };
 
@@ -239,9 +269,9 @@ export async function generateComplianceReportPdf(
     checkPageBreak(14);
     const f = hdr ? bold : regular;
     const clr = hdr ? indigo : textPrimary;
-    page.drawText(a, { x: col[0], y, size: 8, font: f, color: clr });
-    page.drawText(b, { x: col[1], y, size: 8, font: f, color: clr });
-    page.drawText(c, { x: col[2], y, size: 8, font: f, color: clr });
+    put(a, { x: col[0], y, size: 8, font: f, color: clr });
+    put(b, { x: col[1], y, size: 8, font: f, color: clr });
+    put(c, { x: col[2], y, size: 8, font: f, color: clr });
     y -= 13;
   };
 
@@ -266,8 +296,64 @@ export async function generateComplianceReportPdf(
     y -= 2;
   }
 
+  // ── Measures applied (audit notes: counts and choices, never values) ──
+  if (audit.notes?.length) {
+    section('4. Measures Applied');
+    for (const note of audit.notes) {
+      checkPageBreak(14);
+      drawText(`• ${note}`, { size: 9, color: textMuted });
+      y -= 2;
+    }
+  }
+
+  // ── DPIA / ethics summary ────────────────────────────────────────────
+  section('5. For Your Privacy Assessment (DPIA / Ethics)');
+  const pseudo = audit.mode === 'PSEUDONYMISE';
+  const dpia: Array<[string, string]> = [
+    [
+      'Nature of processing',
+      `De-identification of one ${audit.inputFormat} file in the user's web browser. The file was not uploaded or transmitted; no data processor was involved (GDPR Art. 28 not engaged for this step).`,
+    ],
+    [
+      'Personal data found',
+      audit.breakdown.length
+        ? `${audit.breakdown.map((b) => `${b.label} (${b.count})`).join(', ')}. Health records are special category data (GDPR Art. 9).`
+        : 'No identifiers were detected. Health records are special category data (GDPR Art. 9).',
+    ],
+    [
+      'Outcome',
+      pseudo
+        ? 'Pseudonymised (GDPR Art. 4(5)): the output is still personal data. Re-identification needs the key file, held separately by the controller.'
+        : `Anonymised to the tool's threshold (k = ${audit.kAnonymity}). Whether the output is anonymous under GDPR Recital 26 depends on the means reasonably likely to be used, including the context it is shared in.`,
+    ],
+    [
+      'Residual risks',
+      [
+        audit.validationPassed ? 'No original identifier was found in the output.' : 'An original identifier was found in the output: do not share it.',
+        ...audit.reasonsForRisk.slice(0, 3),
+        'Automated detection can miss identifiers (unusual names, identifying context, text inside images).',
+      ].join(' '),
+    ],
+    [
+      'Actions for the controller',
+      [
+        pseudo ? 'Store the key file and its passphrase separately from the output, with restricted access.' : 'Do not keep a link between the output and the original.',
+        'Have a person read the output as a "motivated intruder" before release.',
+        'Record the lawful basis, the recipients and the retention period.',
+        'Keep this report and the audit log with your records of processing (GDPR Art. 30).',
+      ].join(' '),
+    ],
+  ];
+  for (const [title, body] of dpia) {
+    checkPageBreak(28);
+    put(title, { x: margin, y, size: 9, font: bold, color: textPrimary });
+    y -= 12;
+    drawText(body, { size: 9, color: textMuted });
+    y -= 4;
+  }
+
   // ── Regulation references ────────────────────────────────────────────
-  section('4. Regulation References');
+  section('6. Regulation References');
   const regs = [
     ['GDPR Article 4(5)', 'Pseudonymisation definition'],
     ['GDPR Recital 26', 'Anonymisation standard'],
@@ -277,13 +363,13 @@ export async function generateComplianceReportPdf(
   ];
   for (const [ref, desc] of regs) {
     checkPageBreak(14);
-    page.drawText(ref, { x: margin, y, size: 9, font: bold, color: textPrimary });
-    page.drawText(desc, { x: margin + 180, y, size: 9, font: regular, color: textMuted });
+    put(ref, { x: margin, y, size: 9, font: bold, color: textPrimary });
+    put(desc, { x: margin + 180, y, size: 9, font: regular, color: textMuted });
     y -= 13;
   }
 
   // ── Attribution ──────────────────────────────────────────────────────
-  section('5. Attribution');
+  section('7. Attribution');
   drawText(
     `Rare disease ICD catalogue: ${audit.attribution.rareIcdCatalogue.source} · ` +
     `${audit.attribution.rareIcdCatalogue.licence} · ${audit.attribution.rareIcdCatalogue.url}`,
@@ -291,7 +377,7 @@ export async function generateComplianceReportPdf(
   );
 
   // ── Signature block ──────────────────────────────────────────────────
-  section('6. Certification');
+  section('8. Certification');
   drawText(
     `This report certifies that the above-named record was processed by ${ENGINE_NAME} ` +
     `v${audit.engineVersion} on ${new Date(audit.timestamp).toLocaleDateString()} ` +
@@ -303,9 +389,9 @@ export async function generateComplianceReportPdf(
   y -= 20;
   page.drawLine({ start: { x: margin, y }, end: { x: margin + 200, y }, thickness: 0.5, color: indigo });
   y -= 14;
-  page.drawText('Authorised by', { x: margin, y, size: 8, font: regular, color: textMuted });
+  put('Authorised by', { x: margin, y, size: 8, font: regular, color: textMuted });
   y -= 12;
-  page.drawText('Date', { x: margin + 220, y: y + 12, size: 8, font: regular, color: textMuted });
+  put('Date', { x: margin + 220, y: y + 12, size: 8, font: regular, color: textMuted });
 
   return doc.save();
 }
