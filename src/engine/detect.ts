@@ -222,16 +222,22 @@ export function mergeSpans(spans: Span[]): Span[] {
       merged.push(s);
       continue;
     }
-    // Overlap — pick the winning label/source but span the full union.
-    // captureStart/captureEnd are cleared so the replacement engine always uses
-    // start/end (the full union) rather than a sub-range of the winner span.
+    // Overlap — pick the winning label/source; the span covers the full
+    // union, and the part to REPLACE is the union of each span's own
+    // replaced part. A context rule ("her daughter Amira", "PATIENT NAME:
+    // JOHN BAKER") replaces only the name even when it merges with a model
+    // detection of that name; the context words stay.
     const winner = pickWinner(last, s);
+    const start = Math.min(last.start, s.start);
+    const end = Math.max(last.end, s.end);
+    const cs = Math.min(last.captureStart ?? last.start, s.captureStart ?? s.start);
+    const ce = Math.max(last.captureEnd ?? last.end, s.captureEnd ?? s.end);
     merged[merged.length - 1] = {
       ...winner,
-      start: Math.min(last.start, s.start),
-      end:   Math.max(last.end,   s.end),
-      captureStart: undefined,
-      captureEnd: undefined,
+      start,
+      end,
+      captureStart: cs === start && ce === end ? undefined : cs,
+      captureEnd: cs === start && ce === end ? undefined : ce,
     };
   }
   return merged;
