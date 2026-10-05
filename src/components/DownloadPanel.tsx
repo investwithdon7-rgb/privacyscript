@@ -58,10 +58,7 @@ export function DownloadPanel({ mode }: { mode: Mode }) {
 
   const downloadRecord = () => {
     const filename = `${baseName}.deidentified.${ext}`;
-    // DICOM: the cleaned binary is stored in sourceBytes (set by the ingest step)
-    if (s.format === 'DICOM' && s.sourceBytes) {
-      downloadBlob(new Blob([s.sourceBytes], { type: 'application/dicom' }), filename);
-    } else if (s.deidentifiedBytes) {
+    if (s.deidentifiedBytes) {
       downloadBlob(new Blob([s.deidentifiedBytes], { type: mime }), filename);
     } else if (s.deidentifiedOutput !== null) {
       downloadText(s.deidentifiedOutput, filename, mime);

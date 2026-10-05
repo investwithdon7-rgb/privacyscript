@@ -42,7 +42,10 @@ export function detectFormat(filename: string, content: string): RecordFormat {
   if (ext === 'csv' || ext === 'tsv' || ext === 'xlsx' || ext === 'sav') return 'CSV';
   if (ext === 'txt' || ext === 'md') return 'TEXT';
 
-  // Sniff content
+  // Sniff content. DICOM files often have no extension ("IM0001"): the
+  // marker sits after a 128-byte preamble.
+  const dicm = content.indexOf('DICM');
+  if (dicm >= 100 && dicm <= 260) return 'DICOM';
   if (HL7_SEGMENT_RE.test(content.trim())) return 'HL7_V2';
   if (looksLikeFhir(content)) return 'FHIR_R4';
 

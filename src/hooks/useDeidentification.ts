@@ -12,6 +12,7 @@ import { parseHL7, reconstructHL7, forcedLabelForHl7Leaf, type HL7Leaf } from '@
 import type { DocxIngestResult } from '@/formats/docx';
 import type { PdfIngest, PdfRedaction } from '@/formats/pdf-typed';
 import type { CsvIngest, CsvLeaf } from '@/formats/csv';
+import type { DicomIngest, DicomRebuildResult } from '@/formats/dicom';
 import type { IdentifierLabel } from '@/lib/identifiers';
 import type { ScannedPdfIngest, ScannedRedaction, ScanProgress } from '@/formats/pdf-scanned';
 import { generateSessionSecret } from '@/engine/crypto';
@@ -231,39 +232,18 @@ export async function ingestAndDetect(file: File): Promise<void> {
         break;
       }
       case 'DICOM': {
-        // DICOM: we de-identify at the tag level first (ps3.15 Annex E), then
-        // also run NER on the extracted tag text values as a second-pass catch.
+        // Header values the span engine reads (names, IDs, free text) become
+        // leaves, like FHIR. UIDs, dates and removals are applied by the DICOM
+        // profile itself when the file is rebuilt (formats/dicom.ts).
         sourceBytes = await file.arrayBuffer();
-        const { deidentifyDicom } = await import('@/formats/dicom');
-        const dicomResult = await deidentifyDicom(sourceBytes);
-        // The cleaned bytes become the output for the binary download.
-        parsedOriginal = dicomResult;
-        // Build a text representation for NER detection (values were already blanked,
-        // so the text here is used only to surface what WAS in the file pre-clean).
-        // We extract readable text from the ORIGINAL buffer for the detect pass.
-        const { default: dicomParser } = await import('dicom-parser');
-        const origBuf = new Uint8Array(sourceBytes);
-        let dicomText = '';
-        try {
-          const ds = dicomParser.parseDicom(origBuf);
-          const TAG_NAMES: Record<string, string> = {
-            '00100010': 'PatientName', '00100020': 'PatientID',
-            '00100030': 'PatientBirthDate', '00100040': 'PatientSex',
-            '00080080': 'InstitutionName', '00080090': 'ReferringPhysicianName',
-            '00101040': 'PatientAddress', '00102160': 'EthnicGroup',
-          };
-          const lines: string[] = [];
-          for (const [tag, name] of Object.entries(TAG_NAMES)) {
-            try {
-              const val = ds.string(`x${tag}`);
-              if (val) lines.push(`${name}: ${val}`);
-            } catch { /* tag absent */ }
-          }
-          dicomText = lines.join('\n') || '(no readable tags)';
-        } catch { dicomText = '(DICOM parse error)'; }
-        // Store cleaned bytes for download; detect on original tag text.
-        sourceBytes = dicomResult.bytes.buffer;
-        text = dicomText;
+        const { ingestDicom } = await import('@/formats/dicom');
+        const dicom = await ingestDicom(sourceBytes);
+        parsedOriginal = dicom;
+        text = dicom.leaves.map((l) => l.value).join(LEAF_DELIM);
+        forcedSpans = buildForcedSpans(
+          dicom.leaves.map((l) => l.value),
+          (i) => dicom.leaves[i].label
+        );
         break;
       }
       default:
@@ -660,6 +640,21 @@ export async function finalise(): Promise<void> {
         mapping: { ...replacement.mapping, ...tabularOut.mapping },
       };
     }
+    // DICOM: rebuild the file now (UIDs, dates and removals are applied by the
+    // profile); pseudonymised UIDs belong in the re-identification key.
+    let dicomOut: DicomRebuildResult | null = null;
+    if (s.format === 'DICOM') {
+      const { rebuildDicom } = await import('@/formats/dicom');
+      dicomOut = await rebuildDicom(s.parsedOriginal as DicomIngest, replacement.text.split(LEAF_DELIM), {
+        mode: s.mode,
+        secret: secret ?? undefined,
+        dateShiftDays: replacement.dateShiftDays,
+      });
+      finalReplacement = {
+        ...replacement,
+        mapping: { ...replacement.mapping, ...dicomOut.uidMapping },
+      };
+    }
     updateSession({ replacement: finalReplacement, stageIndex: 3 });
 
     // Stage 4: RISK
@@ -684,6 +679,7 @@ export async function finalise(): Promise<void> {
         s.mode
       );
     }
+    if (dicomOut) risk = withBurnedInRisk(risk, s.parsedOriginal as DicomIngest);
     updateSession({ risk, stageIndex: 4 });
 
     // Stage 5: VALIDATE
@@ -720,11 +716,31 @@ export async function finalise(): Promise<void> {
       mode: s.mode,
       originalIdentifiers: Array.from(new Set(originalIdentifiers)),
     });
+    if (dicomOut) {
+      // Validate the bytes that will be downloaded: the engine's fields get the
+      // usual checks, and no original name, ID, UID or date may survive in ANY
+      // text field of the written file.
+      const { dicomTextValues } = await import('@/formats/dicom');
+      const values = await dicomTextValues(dicomOut.bytes);
+      const fieldCheck = await validate(values.engine.join(LEAF_DELIM), {
+        mode: s.mode,
+        originalIdentifiers: Array.from(new Set(originalIdentifiers)),
+      });
+      const fileCheck = await validate(values.all.join(LEAF_DELIM), {
+        mode: 'PSEUDONYMISE', // verbatim originals only; UIDs would trip the regex scan
+        originalIdentifiers: Array.from(new Set([...originalIdentifiers, ...dicomOut.originals])),
+      });
+      validation.leaks = fieldCheck.leaks;
+      validation.originalsLeaked = Array.from(new Set([...fieldCheck.originalsLeaked, ...fileCheck.originalsLeaked]));
+      validation.passed = validation.originalsLeaked.length === 0;
+    }
     validation.nerLeaks = keptPossibleNames(s, validationText);
     updateSession({ validation, stageIndex: 5 });
 
     // Stage 6: OUTPUT
-    const { textOutput, bytesOutput } = tabularOut
+    const { textOutput, bytesOutput } = dicomOut
+      ? { textOutput: undefined, bytesOutput: dicomOut.bytes }
+      : tabularOut
       ? {
           textOutput: (await import('papaparse')).default.unparse(tabularOut.rows, {
             columns: tabularOut.headers,
@@ -734,6 +750,7 @@ export async function finalise(): Promise<void> {
       : await reconstructOutput(s.format!, replacement);
     const tabularNotes = tab && tabularOut ? tabularAuditNotes(tab, tabularOut) : [];
     if (tr) tabularNotes.push(...transcriptAuditNotes(tr));
+    if (dicomOut) tabularNotes.push(...dicomOut.notes);
     if (s.scriptWarning) {
       tabularNotes.push(
         `Unreadable script (${s.scriptWarning.scripts.join(', ') || 'non-Latin'}): ${Math.round(s.scriptWarning.unreadableRatio * 100)}% of letters could not be checked automatically. The user confirmed they reviewed those passages manually.`
@@ -787,6 +804,19 @@ function keptPossibleNames(s: ReturnType<typeof getSession>, output: string) {
     seen.add(word);
     return new RegExp(`(?<![\\p{L}\\d])${word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\d])`, 'u').test(output);
   });
+}
+
+/**
+ * Text burned into the pixels is not removed. When the file says it is there,
+ * or the kind of image usually has it, the user must confirm they checked.
+ */
+function withBurnedInRisk(risk: RiskAssessment, dicom: DicomIngest): RiskAssessment {
+  if (dicom.burnedIn !== 'YES' && dicom.burnedIn !== 'LIKELY') return risk;
+  const reason =
+    dicom.burnedIn === 'YES'
+      ? 'The image has text burned into the pixels (the file says so). The picture was not changed: check it shows no name, date or ID before sharing.'
+      : 'This kind of image (ultrasound, screenshot or scanned document) often has names or dates burned into the picture. The picture was not changed: check it before sharing.';
+  return { ...risk, level: 'HIGH', reasons: [reason, ...risk.reasons] };
 }
 
 /**
