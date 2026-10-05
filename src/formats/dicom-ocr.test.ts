@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { blackOutPixels, frameToGrey, nativePixels, type DicomElement, type DicomFile } from '@/formats/dicom';
+import { blackOutPixels, encapsulatedFrames, frameToGrey, ingestDicom, nativePixels, parseDicom, rebuildDicom, writeDicom, type DicomElement, type DicomFile } from '@/formats/dicom';
 import { boxesForRedactions, groupOcrLines, safetyNetRanges } from '@/formats/dicom-ocr';
 
 const T = (hex: string) => parseInt(hex, 16) >>> 0;
@@ -54,6 +54,43 @@ describe('DICOM pixels', () => {
     const f = image({ rows: 2, cols: 2, samples: 1, bits: 8, photometric: 'MONOCHROME2', pixels: new Uint8Array(4) });
     f.dataset[f.dataset.length - 1] = { tag: T('7FE00010'), vr: 'OB', encapsulated: new Uint8Array(8) };
     expect(nativePixels(f)).toBeNull();
+  });
+});
+
+describe('compressed (JPEG) DICOM', () => {
+  const item = (data: number[]) => [0xfe, 0xff, 0x00, 0xe0, data.length, 0, 0, 0, ...data];
+  const delim = [0xfe, 0xff, 0xdd, 0xe0, 0, 0, 0, 0];
+  const withFrames = (frames: number, encapsulated: number[]): DicomFile => ({
+    meta: [],
+    transferSyntax: '1.2.840.10008.1.2.4.50',
+    explicit: true,
+    dataset: [
+      el('00280002', 'US', us(3)),
+      el('00280004', 'CS', str('YBR_FULL_422')),
+      el('00280008', 'IS', str(String(frames))),
+      { tag: T('7FE00010'), vr: 'OB', encapsulated: new Uint8Array(encapsulated) },
+    ],
+  });
+
+  it('splits frames by fragment, by offset table, or joins a single frame', () => {
+    expect(encapsulatedFrames(withFrames(2, [...item([]), ...item([1, 2]), ...item([3, 4]), ...delim]))!.map((f) => Array.from(f))).toEqual([[1, 2], [3, 4]]);
+    // Offset table: frame 1 = fragments 1+2, frame 2 = fragment 3 (offset 20 = two 10-byte items).
+    const bot = [0, 0, 0, 0, 20, 0, 0, 0];
+    expect(encapsulatedFrames(withFrames(2, [...item(bot), ...item([1, 2]), ...item([3, 4]), ...item([5, 6]), ...delim]))!.map((f) => Array.from(f))).toEqual([[1, 2, 3, 4], [5, 6]]);
+    expect(encapsulatedFrames(withFrames(1, [...item([]), ...item([1, 2]), ...item([3, 4]), ...delim]))!.map((f) => Array.from(f))).toEqual([[1, 2, 3, 4]]);
+  });
+
+  it('writes replacement pixels uncompressed with matching image attributes', async () => {
+    const f = withFrames(1, [...item([]), ...item([0xff, 0xd8, 0xff, 0xd9]), ...delim]);
+    f.meta = [el('00020010', 'UI', str('1.2.840.10008.1.2.4.50'))];
+    f.dataset.unshift(el('00080016', 'UI', str('1.2.840.10008.5.1.4.1.1.6.1')), el('00080060', 'CS', str('US')));
+    const ingest = await ingestDicom(writeDicom(f).slice().buffer);
+    const out = await rebuildDicom(ingest, [], { mode: 'ANONYMISE', replacePixels: { data: new Uint8Array(12), samples: 3 } });
+    const parsed = await parseDicom(out.bytes.slice().buffer);
+    const s = (tag: string) => String.fromCharCode(...parsed.dataset.find((e) => e.tag === T(tag))!.value!).replace(/[\0 ]+$/, '');
+    expect(parsed.transferSyntax).toBe('1.2.840.10008.1.2.1');
+    expect(s('00280004')).toBe('RGB');
+    expect(parsed.dataset.find((e) => e.tag === T('7FE00010'))!.value!.length).toBe(12);
   });
 });
 

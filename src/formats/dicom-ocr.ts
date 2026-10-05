@@ -127,6 +127,56 @@ export function safetyNetRanges(
 }
 
 /**
+ * Decode JPEG frames with the browser's own decoder (no library, no
+ * download) into 8-bit pixels: interleaved RGB, or grey for monochrome
+ * images. Browser only.
+ */
+export async function decodeJpegFrames(frames: Uint8Array[], samples: 1 | 3): Promise<PixelInfo> {
+  let rows = 0;
+  let cols = 0;
+  const decoded: Uint8Array[] = [];
+  for (const f of frames) {
+    const bitmap = await createImageBitmap(new Blob([f], { type: 'image/jpeg' }), {
+      colorSpaceConversion: 'none',
+      premultiplyAlpha: 'none',
+    });
+    cols = bitmap.width;
+    rows = bitmap.height;
+    const canvas = document.createElement('canvas');
+    canvas.width = cols;
+    canvas.height = rows;
+    const ctx = canvas.getContext('2d')!;
+    ctx.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    const rgba = ctx.getImageData(0, 0, cols, rows).data;
+    const out = new Uint8Array(rows * cols * samples);
+    for (let p = 0; p < rows * cols; p++) {
+      if (samples === 3) {
+        out[p * 3] = rgba[p * 4];
+        out[p * 3 + 1] = rgba[p * 4 + 1];
+        out[p * 3 + 2] = rgba[p * 4 + 2];
+      } else out[p] = rgba[p * 4];
+    }
+    decoded.push(out);
+  }
+  const frameBytes = rows * cols * samples;
+  const value = new Uint8Array(frameBytes * decoded.length);
+  decoded.forEach((d, i) => value.set(d, i * frameBytes));
+  return {
+    rows,
+    cols,
+    frames: decoded.length,
+    samples,
+    bitsAllocated: 8,
+    signed: false,
+    photometric: samples === 3 ? 'RGB' : 'MONOCHROME2',
+    planar: 0,
+    frameBytes,
+    value,
+  };
+}
+
+/**
  * OCR the first frame (browser only). The frame is scaled up 2x, made dark
  * text on white (burned-in text is usually light on a dark image) and
  * thresholded, which is what Tesseract reads best. Boxes come back in the

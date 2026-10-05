@@ -829,6 +829,60 @@ export interface DicomRebuildOptions {
   dateShiftDays?: number;
   /** Burned-in text to black out, in pixel coordinates (every frame). */
   pixelBoxes?: PixelBox[];
+  /**
+   * New uncompressed 8-bit pixels (decoded from a compressed image and
+   * already blacked out). Written as explicit VR little endian.
+   */
+  replacePixels?: { data: Uint8Array; samples: 1 | 3 };
+}
+
+/** Transfer syntaxes whose frames the browser's own JPEG decoder can read. */
+export const BROWSER_DECODABLE_TS = new Set(['1.2.840.10008.1.2.4.50']); // JPEG baseline (8-bit)
+
+/**
+ * The compressed frames of encapsulated pixel data (one JPEG per frame).
+ * Uses the basic offset table when present; otherwise one fragment per
+ * frame, or all fragments joined for a single frame.
+ */
+export function encapsulatedFrames(file: DicomFile): Uint8Array[] | null {
+  const pixel = file.dataset.find((e) => e.tag === PIXEL_DATA);
+  if (!pixel?.encapsulated) return null;
+  const b = pixel.encapsulated;
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const items: Array<{ offset: number; data: Uint8Array }> = [];
+  let p = 0;
+  while (p + 8 <= b.length) {
+    const tag = ((v.getUint16(p, true) << 16) | v.getUint16(p + 2, true)) >>> 0;
+    const len = v.getUint32(p + 4, true);
+    if (tag === SEQ_DELIM) break;
+    items.push({ offset: p, data: b.subarray(p + 8, p + 8 + len) });
+    p += 8 + len;
+  }
+  if (items.length < 2) return null;
+  const [bot, ...fragments] = items;
+  const framesEl = file.dataset.find((e) => e.tag === T('00280008'))?.value;
+  const frames = Math.max(1, framesEl ? parseInt(decodeAscii(framesEl), 10) || 1 : 1);
+  const join = (list: Uint8Array[]) => {
+    const out = new Uint8Array(list.reduce((n, x) => n + x.length, 0));
+    let o = 0;
+    for (const x of list) {
+      out.set(x, o);
+      o += x.length;
+    }
+    return out;
+  };
+  if (frames === 1) return [join(fragments.map((f) => f.data))];
+  if (fragments.length === frames) return fragments.map((f) => f.data);
+  if (bot.data.length >= frames * 4) {
+    // Offsets are measured from the first fragment's item tag.
+    const first = fragments[0].offset;
+    const starts = Array.from({ length: frames }, (_, i) => new DataView(bot.data.buffer, bot.data.byteOffset).getUint32(i * 4, true));
+    return starts.map((s, i) => {
+      const end = i + 1 < frames ? starts[i + 1] : Infinity;
+      return join(fragments.filter((f) => f.offset - first >= s && f.offset - first < end).map((f) => f.data));
+    });
+  }
+  return null;
 }
 
 export interface DicomRebuildResult {
@@ -931,6 +985,10 @@ export async function rebuildDicom(
       }
       if (el.items) {
         out.push({ ...el, items: await Promise.all(el.items.map(transform)) });
+        continue;
+      }
+      if (el === topPixel && opts.replacePixels) {
+        out.push({ tag: PIXEL_DATA, vr: 'OB', value: opts.replacePixels.data });
         continue;
       }
       if (el === topPixel && pixelInfo) {
@@ -1075,8 +1133,27 @@ export async function rebuildDicom(
     if (el.tag === T('00020012') || el.tag === T('00020013')) continue;
     meta.push(el);
   }
-  const outTs =
-    ingest.file.transferSyntax === TS_DEFLATE ? TS_EXPLICIT : ingest.file.transferSyntax;
+  if (opts.replacePixels) {
+    // The decoded image is written uncompressed: 8-bit, interleaved, and
+    // RGB when it has colour (the browser decodes YBR to RGB).
+    const rgb = opts.replacePixels.samples === 3;
+    setElement(dataset, { tag: T('00280002'), vr: 'US', value: new Uint8Array([opts.replacePixels.samples, 0]) });
+    setElement(dataset, { tag: T('00280004'), vr: 'CS', value: ascii(rgb ? 'RGB' : 'MONOCHROME2') });
+    if (rgb) setElement(dataset, { tag: T('00280006'), vr: 'US', value: new Uint8Array([0, 0]) });
+    else {
+      const i = dataset.findIndex((e) => e.tag === T('00280006'));
+      if (i >= 0) dataset.splice(i, 1);
+    }
+    setElement(dataset, { tag: T('00280100'), vr: 'US', value: new Uint8Array([8, 0]) });
+    setElement(dataset, { tag: T('00280101'), vr: 'US', value: new Uint8Array([8, 0]) });
+    setElement(dataset, { tag: T('00280102'), vr: 'US', value: new Uint8Array([7, 0]) });
+    setElement(dataset, { tag: T('00280103'), vr: 'US', value: new Uint8Array([0, 0]) });
+  }
+  const outTs = opts.replacePixels
+    ? TS_EXPLICIT
+    : ingest.file.transferSyntax === TS_DEFLATE
+    ? TS_EXPLICIT
+    : ingest.file.transferSyntax;
   setElement(meta, { tag: T('00020001'), vr: 'OB', value: new Uint8Array([0, 1]) });
   setElement(meta, { tag: T('00020010'), vr: 'UI', value: ascii(outTs) });
   setElement(meta, { tag: T('00020012'), vr: 'UI', value: ascii(PRIVACYSCRIPT_IMPLEMENTATION_UID) });
@@ -1104,7 +1181,11 @@ export async function rebuildDicom(
   if (counts.shortened) notes.push(`DICOM: ${counts.shortened} replacement codes shortened to fit the field length (8-character code kept).`);
   if (outputTerm) notes.push('DICOM: text re-encoded as UTF-8 (ISO_IR 192).');
   const burned = burnedInWarning(ingest.burnedIn);
-  if (pixelInfo) {
+  if (opts.replacePixels) {
+    notes.push(
+      `DICOM pixels: compressed (JPEG) image decoded in the browser; ${opts.pixelBoxes?.length ?? 0} identifying text area(s) blacked out in every frame; written uncompressed (no second lossy compression). Reading text from images is not perfect: the user confirmed they checked the picture.`
+    );
+  } else if (pixelInfo) {
     notes.push(
       `DICOM pixels: text read from the image; ${opts.pixelBoxes!.length} identifying text area(s) blacked out in all ${pixelInfo.frames} frame(s). Reading text from images is not perfect: the user confirmed they checked the picture.`
     );

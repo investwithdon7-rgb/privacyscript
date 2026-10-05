@@ -254,15 +254,26 @@ export async function ingestAndDetect(file: File): Promise<void> {
         // leaves, like FHIR. UIDs, dates and removals are applied by the DICOM
         // profile itself when the file is rebuilt (formats/dicom.ts).
         sourceBytes = await file.arrayBuffer();
-        const { ingestDicom, nativePixels } = await import('@/formats/dicom');
+        const { ingestDicom, nativePixels, encapsulatedFrames, BROWSER_DECODABLE_TS } = await import('@/formats/dicom');
         const dicom: DicomWithOcr = { ...(await ingestDicom(sourceBytes)), ocrLines: [] };
-        // Text burned into the picture: read it (uncompressed images only)
-        // so it goes through the same review as every other field.
-        const pixels = dicom.burnedIn === 'YES' || dicom.burnedIn === 'LIKELY' ? nativePixels(dicom.file) : null;
-        if (pixels && typeof document !== 'undefined') {
+        // Text burned into the picture: read it so it goes through the same
+        // review as every other field. Uncompressed images are read directly;
+        // baseline JPEG is decoded by the browser itself (first frame only).
+        const burned = dicom.burnedIn === 'YES' || dicom.burnedIn === 'LIKELY';
+        if (burned && typeof document !== 'undefined') {
           try {
-            const { readBurnedInText } = await import('@/formats/dicom-ocr');
-            dicom.ocrLines = await readBurnedInText(pixels);
+            const ocr = await import('@/formats/dicom-ocr');
+            let pixels = nativePixels(dicom.file);
+            if (!pixels && BROWSER_DECODABLE_TS.has(dicom.file.transferSyntax)) {
+              const frames = encapsulatedFrames(dicom.file);
+              const samplesEl = dicom.file.dataset.find((e) => e.tag === 0x00280002)?.value;
+              const samples: 1 | 3 = samplesEl?.[0] === 3 ? 3 : 1;
+              if (frames?.length) {
+                pixels = await ocr.decodeJpegFrames([frames[0]], samples);
+                dicom.jpegSamples = samples;
+              }
+            }
+            if (pixels) dicom.ocrLines = await ocr.readBurnedInText(pixels);
           } catch {
             dicom.ocrLines = []; // OCR unavailable: the warning still asks for a manual check
           }
@@ -705,11 +716,22 @@ export async function finalise(): Promise<void> {
     if (s.format === 'DICOM') {
       const { rebuildDicom } = await import('@/formats/dicom');
       const dicom = s.parsedOriginal as DicomWithOcr;
+      const pixelBoxes = await burnedInBoxes(dicom, allSpans, activeQuasi, s.quasiToRedact);
+      // Compressed (JPEG) image with text to remove: decode every frame,
+      // black out, write uncompressed. Nothing to remove: keep it as it was.
+      let replacePixels: { data: Uint8Array; samples: 1 | 3 } | undefined;
+      if (dicom.jpegSamples && pixelBoxes.length) {
+        const { encapsulatedFrames, blackOutPixels } = await import('@/formats/dicom');
+        const { decodeJpegFrames } = await import('@/formats/dicom-ocr');
+        const decoded = await decodeJpegFrames(encapsulatedFrames(dicom.file)!, dicom.jpegSamples);
+        replacePixels = { data: blackOutPixels(decoded, pixelBoxes), samples: dicom.jpegSamples };
+      }
       dicomOut = await rebuildDicom(dicom, replacement.text.split(LEAF_DELIM), {
         mode: s.mode,
         secret: secret ?? undefined,
         dateShiftDays: replacement.dateShiftDays,
-        pixelBoxes: await burnedInBoxes(dicom, allSpans, activeQuasi, s.quasiToRedact),
+        pixelBoxes,
+        replacePixels,
       });
       finalReplacement = {
         ...replacement,
@@ -925,7 +947,11 @@ function imageFindingLabel(f: ImageFinding): IdentifierLabel | null {
 }
 
 /** A DICOM file plus the text read from its pixels (one leaf per line, after the header leaves). */
-type DicomWithOcr = DicomIngest & { ocrLines: OcrLine[] };
+type DicomWithOcr = DicomIngest & {
+  ocrLines: OcrLine[];
+  /** Set when the image is baseline JPEG that the browser decoded for OCR. */
+  jpegSamples?: 1 | 3;
+};
 
 /**
  * Pixel boxes to black out: every image word inside a redacted span, and,

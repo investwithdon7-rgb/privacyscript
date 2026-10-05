@@ -10,6 +10,7 @@ import { downloadText } from '@/engine/output';
  */
 export function WordListPanel() {
   const [text, setText] = useState('');
+  const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -21,7 +22,13 @@ export function WordListPanel() {
 
   const load = async (f: File | undefined) => {
     if (!f) return;
-    const loaded = await f.text();
+    // A word list is a short text file; anything else was picked by mistake.
+    const loaded = f.size <= 1_000_000 ? await f.text() : '';
+    if (!loaded || loaded.includes('\0') || loaded.includes('�')) {
+      setError(`"${f.name}" is not a word list. Choose a text file with one word or name per line.`);
+      return;
+    }
+    setError(null);
     setWordListText(text.trim() ? `${text.trim()}\n${loaded}` : loaded);
   };
 
@@ -65,6 +72,11 @@ export function WordListPanel() {
             e.target.value = '';
           }}
         />
+        {error && (
+          <span className="text-xs" style={{ color: 'var(--color-danger)' }}>
+            {error}
+          </span>
+        )}
         <span className="text-xs text-[color:var(--color-muted)]">
           Kept only while this tab is open. The list names people, so store a saved copy safely.
         </span>
