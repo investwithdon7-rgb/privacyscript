@@ -32,6 +32,11 @@ interface ValidateOptions {
    * person's name survives because it didn't match any regex rule.
    */
   nerRunner?: (text: string) => Promise<Span[]>;
+  /**
+   * Replacement values that look like identifiers by design (realistic
+   * surrogates): not reported as residual matches.
+   */
+  ownValues?: string[];
 }
 
 /**
@@ -70,6 +75,14 @@ export async function validate(
     leaks = runRules(deidentifiedText)
       .filter((s) => s.category !== 'QUASI')
       .filter((s) => !isOwnToken(s.text));
+    if (options.ownValues?.length) {
+      const own = options.ownValues;
+      // A match inside a fake value, or a fake value with its context ("Mrs <fake>").
+      leaks = leaks.filter((s) => {
+        const t = s.text.trim();
+        return !own.some((v) => v.includes(t) || t.includes(v));
+      });
+    }
   }
 
   // NER second-pass: run the model on the de-identified output to catch names

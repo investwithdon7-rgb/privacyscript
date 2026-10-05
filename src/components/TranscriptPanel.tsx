@@ -1,6 +1,8 @@
 'use client';
 
 import type { Mode } from '@/lib/constants';
+import { useSession } from '@/hooks/useSession';
+import { updateSession } from '@/state/session';
 import { relabelSpeakers, type SpeakerRole, type TranscriptState } from '@/engine/transcript';
 
 interface TranscriptPanelProps {
@@ -22,6 +24,7 @@ function choiceClass(active: boolean, tone: 'danger' | 'neutral'): string {
 }
 
 export function TranscriptPanel({ transcript, mode, onChange, onConfirm }: TranscriptPanelProps) {
+  const realistic = useSession().replacementStyle === 'realistic';
   const { info, flags, flagDecisions } = transcript;
   const named = info.speakers.filter((s) => s.isName);
   const undecided = flags.filter((f) => flagDecisions[f.id] === undefined).length;
@@ -140,23 +143,42 @@ export function TranscriptPanel({ transcript, mode, onChange, onConfirm }: Trans
           role="radio"
           aria-checked={transcript.readable}
           className={choiceClass(transcript.readable, 'neutral')}
-          onClick={() => onChange({ ...transcript, readable: true })}
+          onClick={() => {
+            updateSession({ replacementStyle: 'codes' });
+            onChange({ ...transcript, readable: true });
+          }}
         >
           Readable: [Person 1], [Organisation 2]
         </button>
         <button
           type="button"
           role="radio"
-          aria-checked={!transcript.readable}
-          className={choiceClass(!transcript.readable, 'neutral')}
-          onClick={() => onChange({ ...transcript, readable: false })}
+          aria-checked={!transcript.readable && realistic}
+          className={choiceClass(!transcript.readable && realistic, 'neutral')}
+          onClick={() => {
+            updateSession({ replacementStyle: 'realistic' });
+            onChange({ ...transcript, readable: false });
+          }}
+        >
+          Realistic: Laura Bennett, Ashbury
+        </button>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={!transcript.readable && !realistic}
+          className={choiceClass(!transcript.readable && !realistic, 'neutral')}
+          onClick={() => {
+            updateSession({ replacementStyle: 'codes' });
+            onChange({ ...transcript, readable: false });
+          }}
         >
           Codes: {mode === 'PSEUDONYMISE' ? '[NAME-3F7A91B2]' : '[NAME]'}
         </button>
       </div>
       <p className="text-xs text-[color:var(--color-muted)] mt-2">
         Readable labels are numbered in the order people are mentioned, and the same person
-        keeps the same number. Best for coding in NVivo or pasting into an AI tool.
+        keeps the same number. Best for coding in NVivo or pasting into an AI tool. Realistic fake
+        names read like the original conversation; speakers keep their Interviewer / Participant labels.
       </p>
 
       {/* Contextual passages */}

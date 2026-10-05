@@ -79,6 +79,8 @@ export interface SessionState {
   nerProgress: { phase: 'detect' | 'validate'; done: number; total: number } | null;
   /** Name-detection models run on this file (for the audit log). */
   nerModels: string[];
+  /** How replaced details look: codes ([NAME-3F7A91B2]) or realistic fakes. */
+  replacementStyle: 'codes' | 'realistic';
   /** User confirmed they will review the unreadable passages themselves (PARTIAL only). */
   scriptAcknowledged: boolean;
   /** Progress within the 6 pipeline stages, 0–6. */
@@ -120,6 +122,7 @@ const INITIAL: SessionState = {
   scriptAcknowledged: false,
   nerProgress: null,
   nerModels: [],
+  replacementStyle: 'codes',
   stageIndex: 0,
   quasiConfirmed: false,
   error: null,

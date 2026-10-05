@@ -4,6 +4,7 @@ import { detect, type Span } from '@/engine/detect';
 import { getNerStatus, modelsFor, NER_MODELS, NerCancelledError, runClinicalNER } from '@/engine/ner';
 import { ruleCoveredLeaves, runNerOnLeaves } from '@/engine/ner-leaves';
 import { currentWordList, wordListSpans } from '@/engine/wordlist';
+import { surrogateRegistry } from '@/engine/surrogate';
 import { replaceSpans, type ReplacementResult } from '@/engine/replace';
 import { assessRisk, type RiskAssessment } from '@/engine/risk';
 import { validate } from '@/engine/validate';
@@ -663,6 +664,9 @@ export async function finalise(): Promise<void> {
       ...confirmedNameSpans,
     ];
 
+    // Realistic fakes: text formats only (photos and DICOM pixels are not text;
+    // DICOM header names would not fit their fields as reliably as codes).
+    const realistic = s.replacementStyle === 'realistic' && s.format !== 'IMAGE' && s.format !== 'DICOM';
     const replacement = await replaceSpans(
       s.originalText,
       allSpans,
@@ -673,6 +677,9 @@ export async function finalise(): Promise<void> {
         quasiToRedact: s.quasiToRedact,
         labeller: tr
           ? transcriptLabeller(tr.info, tr.readable, removedFlags.map((f) => f.text))
+          : undefined,
+        surrogates: realistic
+          ? (label, original) => surrogateRegistry(s.mode === 'PSEUDONYMISE' ? secret?.rawKey : undefined).get(label, original)
           : undefined,
       }
     );
@@ -814,6 +821,7 @@ export async function finalise(): Promise<void> {
     const validation = await validate(validationText, {
       mode: s.mode,
       originalIdentifiers: Array.from(new Set(originalIdentifiers)),
+      ownValues: realistic ? Object.values(replacement.mapping) : undefined,
     });
     if (dicomOut) {
       // Validate the bytes that will be downloaded: the engine's fields get the
@@ -859,6 +867,11 @@ export async function finalise(): Promise<void> {
       : await reconstructOutput(s.format!, replacement);
     const tabularNotes = tab && tabularOut ? tabularAuditNotes(tab, tabularOut) : [];
     if (tr) tabularNotes.push(...transcriptAuditNotes(tr));
+    if (realistic) {
+      tabularNotes.push(
+        `Replacement style: realistic fake values (names, places, numbers in reserved fictional ranges)${s.mode === 'PSEUDONYMISE' ? '; the key file maps them back' : ''}.`
+      );
+    }
     if (dicomOut) tabularNotes.push(...dicomOut.notes);
     const wordList = currentWordList();
     if (wordList.length) {

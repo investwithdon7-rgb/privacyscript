@@ -11,6 +11,7 @@ import { SpanEditor } from '@/components/SpanEditor';
 import { SurveyColumnsPanel } from '@/components/SurveyColumnsPanel';
 import { TranscriptPanel } from '@/components/TranscriptPanel';
 import { ScanStages } from '@/components/ScanStages';
+import { ReplacementStyleChoice } from '@/components/ReplacementStyleChoice';
 import { cancelNer } from '@/engine/ner';
 import type { TranscriptState } from '@/engine/transcript';
 import { useSession } from '@/hooks/useSession';
@@ -295,6 +296,13 @@ export default function ProcessPage() {
     done: false,
     render: () => (
       <>
+        {!s.transcript && s.format !== 'IMAGE' && s.format !== 'DICOM' && s.mode && (
+          <ReplacementStyleChoice
+            value={s.replacementStyle}
+            mode={s.mode}
+            onChange={(v) => updateSession({ replacementStyle: v })}
+          />
+        )}
         <QuasiIdentifierReview
           quasiSpans={quasiForReview}
           redactSet={s.quasiToRedact}

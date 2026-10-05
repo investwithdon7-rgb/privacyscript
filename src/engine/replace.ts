@@ -36,6 +36,11 @@ interface ReplaceOptions {
    * order; return null to use the mode's default replacement.
    */
   labeller?: (label: IdentifierLabel, original: string) => string | null;
+  /**
+   * Realistic replacements (engine/surrogate.ts), used after the labeller;
+   * return null to fall back to the mode's default (dates, postcodes...).
+   */
+  surrogates?: (label: IdentifierLabel, original: string) => string | null;
 }
 
 /**
@@ -117,7 +122,7 @@ export async function replaceSpans(
     if (seenKeys.has(key)) continue;
     seenKeys.add(key);
 
-    const fixed = options.labeller?.(t.span.label, t.original);
+    const fixed = options.labeller?.(t.span.label, t.original) ?? options.surrogates?.(t.span.label, t.original);
     if (fixed != null) {
       cache.set(key, fixed);
       continue;
