@@ -13,7 +13,8 @@ import { parseHL7, reconstructHL7, forcedLabelForHl7Leaf, type HL7Leaf } from '@
 import type { DocxIngestResult } from '@/formats/docx';
 import type { PdfIngest, PdfRedaction } from '@/formats/pdf-typed';
 import type { CsvIngest, CsvLeaf } from '@/formats/csv';
-import type { DicomIngest, DicomRebuildResult } from '@/formats/dicom';
+import type { DicomIngest, DicomRebuildResult, PixelBox } from '@/formats/dicom';
+import type { OcrLine } from '@/formats/dicom-ocr';
 import type { ImageFinding, ImageIngest } from '@/formats/image';
 import type { IdentifierLabel } from '@/lib/identifiers';
 import type { ScannedPdfIngest, ScannedRedaction, ScanProgress } from '@/formats/pdf-scanned';
@@ -252,15 +253,23 @@ export async function ingestAndDetect(file: File): Promise<void> {
         // leaves, like FHIR. UIDs, dates and removals are applied by the DICOM
         // profile itself when the file is rebuilt (formats/dicom.ts).
         sourceBytes = await file.arrayBuffer();
-        const { ingestDicom } = await import('@/formats/dicom');
-        const dicom = await ingestDicom(sourceBytes);
+        const { ingestDicom, nativePixels } = await import('@/formats/dicom');
+        const dicom: DicomWithOcr = { ...(await ingestDicom(sourceBytes)), ocrLines: [] };
+        // Text burned into the picture: read it (uncompressed images only)
+        // so it goes through the same review as every other field.
+        const pixels = dicom.burnedIn === 'YES' || dicom.burnedIn === 'LIKELY' ? nativePixels(dicom.file) : null;
+        if (pixels && typeof document !== 'undefined') {
+          try {
+            const { readBurnedInText } = await import('@/formats/dicom-ocr');
+            dicom.ocrLines = await readBurnedInText(pixels);
+          } catch {
+            dicom.ocrLines = []; // OCR unavailable: the warning still asks for a manual check
+          }
+        }
         parsedOriginal = dicom;
-        text = dicom.leaves.map((l) => l.value).join(LEAF_DELIM);
-        forcedSpans = buildForcedSpans(
-          leafInfo,
-          dicom.leaves.map((l) => l.value),
-          (i) => dicom.leaves[i].label
-        );
+        const values = [...dicom.leaves.map((l) => l.value), ...dicom.ocrLines.map((l) => l.text)];
+        text = values.join(LEAF_DELIM);
+        forcedSpans = buildForcedSpans(leafInfo, values, (i) => dicom.leaves[i]?.label ?? null);
         break;
       }
       case 'IMAGE': {
@@ -692,10 +701,12 @@ export async function finalise(): Promise<void> {
     let dicomOut: DicomRebuildResult | null = null;
     if (s.format === 'DICOM') {
       const { rebuildDicom } = await import('@/formats/dicom');
-      dicomOut = await rebuildDicom(s.parsedOriginal as DicomIngest, replacement.text.split(LEAF_DELIM), {
+      const dicom = s.parsedOriginal as DicomWithOcr;
+      dicomOut = await rebuildDicom(dicom, replacement.text.split(LEAF_DELIM), {
         mode: s.mode,
         secret: secret ?? undefined,
         dateShiftDays: replacement.dateShiftDays,
+        pixelBoxes: await burnedInBoxes(dicom, allSpans, activeQuasi, s.quasiToRedact),
       });
       finalReplacement = {
         ...replacement,
@@ -732,7 +743,7 @@ export async function finalise(): Promise<void> {
         s.mode
       );
     }
-    if (dicomOut) risk = withBurnedInRisk(risk, s.parsedOriginal as DicomIngest);
+    if (dicomOut) risk = withBurnedInRisk(risk, s.parsedOriginal as DicomWithOcr);
     if (imageOut) {
       risk = {
         ...risk,
@@ -903,14 +914,49 @@ function imageFindingLabel(f: ImageFinding): IdentifierLabel | null {
   return null;
 }
 
+/** A DICOM file plus the text read from its pixels (one leaf per line, after the header leaves). */
+type DicomWithOcr = DicomIngest & { ocrLines: OcrLine[] };
+
+/**
+ * Pixel boxes to black out: every image word inside a redacted span, and,
+ * as a safety net, any image word equal to a part of the patient's name or
+ * ID from the header (burned-in banners usually reprint them).
+ */
+async function burnedInBoxes(
+  dicom: DicomWithOcr,
+  spans: Span[],
+  quasi: Span[],
+  quasiToRedact: Set<string>
+): Promise<PixelBox[]> {
+  if (dicom.ocrLines.length === 0) return [];
+  const { boxesForRedactions } = await import('@/formats/dicom-ocr');
+  const starts: number[] = [];
+  let offset = 0;
+  for (const l of dicom.leaves) offset += l.value.length + LEAF_DELIM.length;
+  for (const line of dicom.ocrLines) {
+    starts.push(offset);
+    offset += line.text.length + LEAF_DELIM.length;
+  }
+  const { safetyNetRanges } = await import('@/formats/dicom-ocr');
+  const ranges = [...spans, ...quasi.filter((q) => quasiToRedact.has(q.label))].map((sp) => ({
+    start: sp.captureStart ?? sp.start,
+    end: sp.captureEnd ?? sp.end,
+  }));
+  const headerValues = dicom.leaves.filter((l) => l.label).map((l) => l.value);
+  ranges.push(...safetyNetRanges(dicom.ocrLines, starts, headerValues));
+  return boxesForRedactions(dicom.ocrLines, starts, ranges);
+}
+
 /**
  * Text burned into the pixels is not removed. When the file says it is there,
  * or the kind of image usually has it, the user must confirm they checked.
  */
-function withBurnedInRisk(risk: RiskAssessment, dicom: DicomIngest): RiskAssessment {
+function withBurnedInRisk(risk: RiskAssessment, dicom: DicomWithOcr): RiskAssessment {
   if (dicom.burnedIn !== 'YES' && dicom.burnedIn !== 'LIKELY') return risk;
   const reason =
-    dicom.burnedIn === 'YES'
+    dicom.ocrLines.length > 0
+      ? 'Text burned into the picture was read and identifying words were blacked out in every frame. Reading text from images is not perfect: check the picture shows no name, date or ID before sharing.'
+      : dicom.burnedIn === 'YES'
       ? 'The image has text burned into the pixels (the file says so). The picture was not changed: check it shows no name, date or ID before sharing.'
       : 'This kind of image (ultrasound, screenshot or scanned document) often has names or dates burned into the picture. The picture was not changed: check it before sharing.';
   return { ...risk, level: 'HIGH', reasons: [reason, ...risk.reasons] };

@@ -384,6 +384,14 @@ const NER_DOCUMENT_WORDS = new Set([
   'discharge', 'summary', 'admission', 'diagnosis', 'assessment', 'plan',
   'history', 'medication', 'medications', 'allergies', 'referral', 'report',
   'ward', 'clinic', 'hospital', 'patient', 'doctor', 'nurse', 'dob', 'nhs',
+  // Anatomy and imaging labels: burned into ultrasound pictures and used as
+  // report headings ("LT KIDNEY", "LIVER"); without a sentence around them
+  // the models take them for names.
+  'kidney', 'kidneys', 'liver', 'spleen', 'pancreas', 'gallbladder', 'bladder', 'thyroid', 'uterus',
+  'ovary', 'ovaries', 'prostate', 'testis', 'testes', 'aorta', 'carotid', 'heart', 'lung', 'lungs',
+  'breast', 'abdomen', 'pelvis', 'chest', 'head', 'neck', 'knee', 'shoulder', 'hip', 'wrist', 'ankle',
+  'spine', 'brain', 'fetal', 'fetus', 'foetal', 'placenta', 'renal', 'hepatic', 'cardiac', 'vascular',
+  'sagittal', 'transverse', 'axial', 'coronal', 'doppler', 'left', 'right', 'bilateral',
 ]);
 
 /**

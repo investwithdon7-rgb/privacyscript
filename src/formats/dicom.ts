@@ -676,12 +676,159 @@ export function burnedInWarning(status: BurnedInStatus): string | null {
  * Rebuild
  * --------------------------------------------------------------------------*/
 
+/* ----------------------------------------------------------------------------
+ * Pixels (burned-in text)
+ * --------------------------------------------------------------------------*/
+
+export interface PixelBox {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+
+export interface PixelInfo {
+  rows: number;
+  cols: number;
+  frames: number;
+  samples: number;
+  bitsAllocated: 8 | 16;
+  signed: boolean;
+  photometric: string;
+  /** 1 = colour planes stored one after the other. */
+  planar: number;
+  frameBytes: number;
+  value: Uint8Array;
+}
+
+/**
+ * Uncompressed pixel data this module can read and black out, or null
+ * (compressed transfer syntax, unusual bit depth, or no image).
+ */
+export function nativePixels(file: DicomFile): PixelInfo | null {
+  const el = (hex: string) => file.dataset.find((e) => e.tag === T(hex));
+  const pixel = el('7FE00010');
+  if (!pixel?.value || pixel.encapsulated) return null;
+  const us = (hex: string) => {
+    const v = el(hex)?.value;
+    return v && v.length >= 2 ? v[0] | (v[1] << 8) : undefined;
+  };
+  const rows = us('00280010');
+  const cols = us('00280011');
+  const bits = us('00280100');
+  const samples = us('00280002') ?? 1;
+  if (!rows || !cols || (bits !== 8 && bits !== 16) || (samples !== 1 && samples !== 3)) return null;
+  const framesEl = el('00280008')?.value;
+  const frames = Math.max(1, framesEl ? parseInt(decodeAscii(framesEl), 10) || 1 : 1);
+  const frameBytes = rows * cols * samples * (bits / 8);
+  if (pixel.value.length < frameBytes * frames) return null;
+  return {
+    rows,
+    cols,
+    frames,
+    samples,
+    bitsAllocated: bits,
+    signed: us('00280103') === 1,
+    photometric: el('00280004')?.value ? decodeAscii(el('00280004')!.value!).toUpperCase() : 'MONOCHROME2',
+    planar: us('00280006') ?? 0,
+    frameBytes,
+    value: pixel.value,
+  };
+}
+
+function sampleAt(info: PixelInfo, frame: number, pixel: number, sample: number): number {
+  const base = frame * info.frameBytes;
+  const index =
+    info.samples === 1
+      ? pixel
+      : info.planar === 1
+      ? sample * info.rows * info.cols + pixel
+      : pixel * info.samples + sample;
+  if (info.bitsAllocated === 8) return info.value[base + index];
+  const o = base + index * 2;
+  const v = info.value[o] | (info.value[o + 1] << 8);
+  return info.signed && v > 0x7fff ? v - 0x10000 : v;
+}
+
+/**
+ * One frame as 8-bit greyscale for OCR, auto-windowed to the frame's own
+ * range (burned-in text is usually the brightest thing in the picture).
+ */
+export function frameToGrey(info: PixelInfo, frame = 0): Uint8ClampedArray {
+  const n = info.rows * info.cols;
+  const raw = new Float64Array(n);
+  let min = Infinity;
+  let max = -Infinity;
+  for (let p = 0; p < n; p++) {
+    let v: number;
+    if (info.samples === 3 && info.photometric === 'RGB') {
+      v = 0.299 * sampleAt(info, frame, p, 0) + 0.587 * sampleAt(info, frame, p, 1) + 0.114 * sampleAt(info, frame, p, 2);
+    } else {
+      v = sampleAt(info, frame, p, 0); // grey, or the Y (luma) of YBR
+    }
+    raw[p] = v;
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  const range = max - min || 1;
+  const out = new Uint8ClampedArray(n);
+  const invert = info.photometric === 'MONOCHROME1';
+  for (let p = 0; p < n; p++) {
+    const g = ((raw[p] - min) / range) * 255;
+    out[p] = invert ? 255 - g : g;
+  }
+  return out;
+}
+
+/** Copy of the pixel data with every box painted black in every frame. */
+export function blackOutPixels(info: PixelInfo, boxes: PixelBox[]): Uint8Array {
+  const out = info.value.slice();
+  const bytes = info.bitsAllocated / 8;
+  // "Black" per colour model: lowest value (or highest for MONOCHROME1);
+  // YBR black keeps the colour channels at mid-range.
+  const blackFor = (frame: number, sample: number): number => {
+    if (info.samples === 3) return info.photometric.startsWith('YBR') && sample > 0 ? 128 : 0;
+    if (!info.signed) return info.photometric === 'MONOCHROME1' ? (1 << info.bitsAllocated) - 1 : 0;
+    let m = info.photometric === 'MONOCHROME1' ? -Infinity : Infinity;
+    for (let p = 0; p < info.rows * info.cols; p++) {
+      const v = sampleAt(info, frame, p, 0);
+      m = info.photometric === 'MONOCHROME1' ? Math.max(m, v) : Math.min(m, v);
+    }
+    return m;
+  };
+  for (let f = 0; f < info.frames; f++) {
+    const base = f * info.frameBytes;
+    for (let s = 0; s < info.samples; s++) {
+      const black = blackFor(f, s);
+      const lo = black & 0xff;
+      const hi = (black >> 8) & 0xff;
+      for (const b of boxes) {
+        const x0 = Math.max(0, Math.floor(b.x0)), x1 = Math.min(info.cols, Math.ceil(b.x1));
+        const y0 = Math.max(0, Math.floor(b.y0)), y1 = Math.min(info.rows, Math.ceil(b.y1));
+        for (let y = y0; y < y1; y++) {
+          for (let x = x0; x < x1; x++) {
+            const p = y * info.cols + x;
+            const index =
+              info.samples === 1 ? p : info.planar === 1 ? s * info.rows * info.cols + p : p * info.samples + s;
+            const o = base + index * bytes;
+            out[o] = lo;
+            if (bytes === 2) out[o + 1] = hi;
+          }
+        }
+      }
+    }
+  }
+  return out;
+}
+
 export interface DicomRebuildOptions {
   mode: Mode;
   /** Pseudonymise: session secret (UIDs then go into the key file). */
   secret?: SessionSecret;
   /** Pseudonymise: per-session date shift in days. */
   dateShiftDays?: number;
+  /** Burned-in text to black out, in pixel coordinates (every frame). */
+  pixelBoxes?: PixelBox[];
 }
 
 export interface DicomRebuildResult {
@@ -755,6 +902,8 @@ export async function rebuildDicom(
   const uidMapping: Record<string, string> = {};
   const originals = new Set<string>();
   const counts = { removed: 0, privates: 0, uids: 0, dates: 0, times: 0, ages: 0, text: 0, shortened: 0 };
+  const pixelInfo = opts.pixelBoxes?.length ? nativePixels(ingest.file) : null;
+  const topPixel = ingest.file.dataset.find((e) => e.tag === PIXEL_DATA);
 
   // UIDs are hashed in parallel; collect first, then fill.
   const uidCache = new Map<string, Promise<string>>();
@@ -782,6 +931,10 @@ export async function rebuildDicom(
       }
       if (el.items) {
         out.push({ ...el, items: await Promise.all(el.items.map(transform)) });
+        continue;
+      }
+      if (el === topPixel && pixelInfo) {
+        out.push({ ...el, value: blackOutPixels(pixelInfo, opts.pixelBoxes!) });
         continue;
       }
       if (!el.value || el.value.length === 0 || action === 'keep') {
@@ -951,7 +1104,13 @@ export async function rebuildDicom(
   if (counts.shortened) notes.push(`DICOM: ${counts.shortened} replacement codes shortened to fit the field length (8-character code kept).`);
   if (outputTerm) notes.push('DICOM: text re-encoded as UTF-8 (ISO_IR 192).');
   const burned = burnedInWarning(ingest.burnedIn);
-  notes.push(burned ? `DICOM pixels: ${burned}` : 'DICOM pixels: copied unchanged.');
+  if (pixelInfo) {
+    notes.push(
+      `DICOM pixels: text read from the image; ${opts.pixelBoxes!.length} identifying text area(s) blacked out in all ${pixelInfo.frames} frame(s). Reading text from images is not perfect: the user confirmed they checked the picture.`
+    );
+  } else {
+    notes.push(burned ? `DICOM pixels: ${burned}` : 'DICOM pixels: copied unchanged.');
+  }
 
   return { bytes, uidMapping, originals: [...originals], notes };
 }
