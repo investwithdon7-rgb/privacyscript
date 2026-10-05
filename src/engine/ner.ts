@@ -19,6 +19,7 @@
  */
 
 import type { Span } from '@/engine/detect';
+import { detectLanguage } from '@/engine/language';
 import type { IdentifierLabel } from '@/lib/identifiers';
 import { BASE_PATH } from '@/lib/assets';
 
@@ -204,29 +205,13 @@ export const NER_MODELS: Record<NerModelKey, NerModel> = {
   },
 };
 
-const STOPWORDS: Record<string, string[]> = {
-  en: 'the and of to with is was in for on she he her his patient had has be are this that at by from were not no'.split(' '),
-  es: 'el la de que y en los las del por con una para es se su al lo como más pero'.split(' '),
-  de: 'der die und das ist nicht mit sie ich ein eine den von zu auf für dem des sich auch'.split(' '),
-  fr: 'le la les et des est une pour que dans pas qui sur avec il elle du au ce'.split(' '),
-  nl: 'de het een en van is dat niet ik zijn op te met voor ze die er ook maar'.split(' '),
-  it: 'il la di che e non è per una sono con mi si lo gli della anche ma'.split(' '),
-  pt: 'o a de que e do da em um para é com não uma os no se na por mais'.split(' '),
-};
-
 /**
  * True when the text reads as English, or has too few words to tell (a DICOM
  * header, a terse note). The clinical model only knows English.
  */
 export function readsAsEnglish(text: string): boolean {
-  const words = text.slice(0, 20000).toLowerCase().match(/\p{L}+/gu) ?? [];
-  const score: Record<string, number> = {};
-  for (const [lang, list] of Object.entries(STOPWORDS)) {
-    const set = new Set(list);
-    score[lang] = words.reduce((n, w) => n + (set.has(w) ? 1 : 0), 0);
-  }
-  const other = Math.max(...Object.entries(score).filter(([l]) => l !== 'en').map(([, n]) => n));
-  return other < 5 || score.en >= other;
+  const { lang } = detectLanguage(text);
+  return lang === null || lang === 'en';
 }
 
 // ─── Thorough check (per-device preference, not data) ───────────────────
@@ -408,6 +393,11 @@ const NER_DOCUMENT_WORDS = new Set([
   'breast', 'abdomen', 'pelvis', 'chest', 'head', 'neck', 'knee', 'shoulder', 'hip', 'wrist', 'ankle',
   'spine', 'brain', 'fetal', 'fetus', 'foetal', 'placenta', 'renal', 'hepatic', 'cardiac', 'vascular',
   'sagittal', 'transverse', 'axial', 'coronal', 'doppler', 'left', 'right', 'bilateral',
+  // "Patient" and record headings in German, French, Spanish, Italian, Dutch, Portuguese.
+  'patientin', 'patiente', 'paciente', 'paziente', 'patiënt', 'patiënte', 'doente', 'utente',
+  'entlassbrief', 'arztbrief', 'befund', 'diagnose', 'anamnese', 'diagnóstico', 'diagnostic', 'diagnosi',
+  'informe', 'rapport', 'relazione', 'verslag', 'relatório', 'urgencias', 'notaufnahme', 'urgences',
+  'station', 'planta', 'reparto', 'afdeling', 'serviço', 'servicio', 'service',
 ]);
 
 /**
@@ -430,8 +420,9 @@ export function rawNerToSpans(
 
     let start = g.start;
     let end = g.end;
-    while (start > 0 && /\w/.test(text[start - 1])) start--;
-    while (end < text.length && /\w/.test(text[end])) end++;
+    // Unicode letters: "Patiënte" and "Müller" are one word each.
+    while (start > 0 && /[\p{L}\p{N}_]/u.test(text[start - 1])) start--;
+    while (end < text.length && /[\p{L}\p{N}_]/u.test(text[end])) end++;
 
     const value = text.slice(start, end);
     if (value.trim().length < 3) continue;

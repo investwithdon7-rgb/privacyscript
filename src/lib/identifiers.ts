@@ -49,6 +49,7 @@ export type IdentifierLabel =
   | 'NATIONAL_ID_CH_AHV'
   | 'IBAN'
   | 'PASSPORT'
+  | 'NATIONAL_ID' // other national IDs (EU countries, Mexico): see identifiers-eu.ts
   // Quasi-identifiers
   | 'RARE_DISEASE_ICD'
   | 'INSTITUTION'
@@ -63,6 +64,10 @@ export interface IdentifierRule {
   pattern: RegExp;
   /** Higher priority wins on overlap. */
   priority: number;
+  /** Checksum / plausibility check on the matched value (capture if any). */
+  validate?: (value: string) => boolean;
+  /** ISO country the identifier belongs to (for the jurisdiction suggestion). */
+  country?: string;
 }
 
 /* ----------------------------------------------------------------------------
@@ -366,6 +371,9 @@ export const IDENTIFIER_RULES: IdentifierRule[] = [
   { label: 'ETHNICITY', category: 'QUASI', description: 'Ethnicity / race', pattern: ETHNICITY_PATTERN, priority: 45 },
   { label: 'OCCUPATION', category: 'QUASI', description: 'Occupation', pattern: OCCUPATION_PATTERN, priority: 55 },
   { label: 'AGE_OVER_89', category: 'HIPAA', description: 'Age that may exceed 89', pattern: AGE_OVER_89_PATTERN, priority: 30 },
+
+  // German, French, Spanish, Italian, Dutch, Portuguese records; EU national IDs.
+  ...EU_RULES,
 ];
 
 /**
@@ -385,6 +393,7 @@ export const IDENTIFIER_RULES: IdentifierRule[] = [
  *    (INSERM US14), licensed under CC BY 4.0, orphadata.com."
  */
 
+import { EU_RULES } from '@/lib/identifiers-eu';
 import rareCatalogue from './rare-icd10.json';
 
 export type RareIcdTier = 'flag' | 'auto';

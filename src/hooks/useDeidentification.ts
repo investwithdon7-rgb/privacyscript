@@ -388,10 +388,13 @@ export async function ingestAndDetect(file: File): Promise<void> {
     // The detectors are Latin-script only: text they cannot read yields no
     // spans and would look clean. Flag it so output is never emitted silently.
     const scriptWarning = assessScriptCoverage(text);
+    const { suggestOrigin } = await import('@/engine/jurisdiction');
+    const origin = suggestOrigin(text, [...detection.spans, ...forcedSpans]);
 
     updateSession({
       detection,
       transcript,
+      origin,
       scriptWarning,
       scriptAcknowledged: false,
       quasiToRedact: autoRedact,
@@ -897,6 +900,11 @@ export async function finalise(): Promise<void> {
       );
     }
     if (dicomOut) tabularNotes.push(...dicomOut.notes);
+    if (s.origin?.languageName) {
+      tabularNotes.push(
+        `Language detected: ${s.origin.languageName}.${s.origin.confident ? ` Likely origin: ${s.origin.countryName} (${s.origin.reasons.join(', ')}).` : ''} Rules applied: ${COMPLIANCE_PROFILES[s.complianceProfile ?? 'GDPR_PSEUDO'].label}.`
+      );
+    }
     const wordList = currentWordList();
     if (wordList.length) {
       // Counts only: the terms themselves identify people.
