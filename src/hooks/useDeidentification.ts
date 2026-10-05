@@ -2,6 +2,7 @@
 
 import { detect, type Span } from '@/engine/detect';
 import { getNerStatus, modelsFor, NER_MODELS, NerCancelledError, runClinicalNER } from '@/engine/ner';
+import { ruleCoveredLeaves, runNerOnLeaves } from '@/engine/ner-leaves';
 import { replaceSpans, type ReplacementResult } from '@/engine/replace';
 import { assessRisk, type RiskAssessment } from '@/engine/risk';
 import { validate } from '@/engine/validate';
@@ -67,15 +68,25 @@ const LEAF_DELIM = '\u001F';
  * when regex and NER produce no evidence. Offsets are computed against the
  * LEAF_DELIM-joined text the detect stage runs on.
  */
+/** Leaves of a structured input, kept for name detection (runNerOnLeaves). */
+interface LeafInfo {
+  values: string[] | null;
+  /** Leaves whose whole value is already a forced identifier. */
+  forced: Set<number>;
+}
+
 function buildForcedSpans(
+  leaves: LeafInfo,
   values: string[],
   labelForIndex: (i: number) => IdentifierLabel | null
 ): Span[] {
   const spans: Span[] = [];
   let offset = 0;
+  leaves.values = values;
   values.forEach((v, i) => {
     const label = labelForIndex(i);
     if (label && v.trim().length > 0) {
+      leaves.forced.add(i);
       spans.push({
         start: offset,
         end: offset + v.length,
@@ -111,6 +122,7 @@ export async function ingestAndDetect(file: File): Promise<void> {
     let parsedOriginal: unknown = null;
     let sourceBytes: ArrayBuffer | null = null;
     let forcedSpans: Span[] = [];
+    const leafInfo: LeafInfo = { values: null, forced: new Set() };
     // The typed-PDF case can re-route to the scanned pipeline; the format the
     // rest of the pipeline sees (output reconstruction switches on it!) must
     // reflect that, not the pre-ingest guess.
@@ -123,6 +135,7 @@ export async function ingestAndDetect(file: File): Promise<void> {
         parsedOriginal = { resource, leaves };
         text = leaves.map((l) => l.value).join(LEAF_DELIM);
         forcedSpans = buildForcedSpans(
+          leafInfo,
           leaves.map((l) => l.value),
           (i) => forcedLabelForFhirPath(leaves[i].path)
         );
@@ -134,6 +147,7 @@ export async function ingestAndDetect(file: File): Promise<void> {
         parsedOriginal = { doc, leaves };
         text = leaves.map((l) => l.value).join(LEAF_DELIM);
         forcedSpans = buildForcedSpans(
+          leafInfo,
           leaves.map((l) => l.value),
           (i) => forcedLabelForHl7Leaf(doc, leaves[i])
         );
@@ -213,6 +227,7 @@ export async function ingestAndDetect(file: File): Promise<void> {
         updateSession({ tabular: buildTabularState(csv, getSession().mode ?? 'PSEUDONYMISE', questions) });
         text = csv.leaves.map((l) => l.value).join(LEAF_DELIM);
         forcedSpans = buildForcedSpans(
+          leafInfo,
           csv.leaves.map((l) => l.value),
           (i) => forcedLabelForCsvColumn(csv.leaves[i].column)
         );
@@ -241,6 +256,7 @@ export async function ingestAndDetect(file: File): Promise<void> {
         parsedOriginal = dicom;
         text = dicom.leaves.map((l) => l.value).join(LEAF_DELIM);
         forcedSpans = buildForcedSpans(
+          leafInfo,
           dicom.leaves.map((l) => l.value),
           (i) => dicom.leaves[i].label
         );
@@ -271,11 +287,22 @@ export async function ingestAndDetect(file: File): Promise<void> {
     // IDs and speaker labels are masked (speakers are handled by rules).
     const nerModels = modelsFor(text);
     updateSession({ nerModels: nerModels.map((m) => NER_MODELS[m].id) });
-    const nerSpans = await runClinicalNER(text, {
-      models: nerModels,
-      skip: transcriptInfo ? [...transcriptInfo.structuralSpans, ...transcriptInfo.labelSpans] : [],
-      onProgress: (done, total) => updateSession({ nerProgress: { phase: 'detect', done, total } }),
-    });
+    const onNerProgress = (done: number, total: number) =>
+      updateSession({ nerProgress: { phase: 'detect', done, total } });
+    // Structured inputs: each distinct field value is read once.
+    if (leafInfo.values) {
+      for (const i of ruleCoveredLeaves(leafInfo.values, LEAF_DELIM.length, text)) leafInfo.forced.add(i);
+    }
+    const nerSpans = leafInfo.values
+      ? await runNerOnLeaves(leafInfo.values, LEAF_DELIM.length, leafInfo.forced, {
+          models: nerModels,
+          onProgress: onNerProgress,
+        })
+      : await runClinicalNER(text, {
+          models: nerModels,
+          skip: transcriptInfo ? [...transcriptInfo.structuralSpans, ...transcriptInfo.labelSpans] : [],
+          onProgress: onNerProgress,
+        });
     updateSession({ nerProgress: null });
     const detection = transcriptInfo
       ? detectTranscript(text, transcriptInfo, nerSpans, forcedSpans)

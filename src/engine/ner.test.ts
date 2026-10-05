@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { aggregateEntities, rawNerToSpans, wordPieceOffsets, withOffsets, fitToModel, modelsFor, softenCaps, dropCoveredSpans, readsAsEnglish, NER_MODELS, type PositionedNer } from '@/engine/ner';
+import { runNerOnLeaves } from '@/engine/ner-leaves';
 
 /**
  * Regression tests for NER post-processing.
@@ -220,6 +221,24 @@ describe('dropCoveredSpans', () => {
   it('drops a weaker span inside a stronger one, keeps the rest', () => {
     const kept = dropCoveredSpans([span(0, 10, 0.99), span(5, 10, 0.54), span(20, 25, 0.6), span(18, 26, 0.5)]);
     expect(kept.map((s) => [s.start, s.end])).toEqual([[0, 10], [20, 25], [18, 26]]);
+  });
+});
+
+describe('runNerOnLeaves', () => {
+  it('reads each distinct value once and copies spans to every cell', async () => {
+    const values = ['Agree', 'Dr Okafor was kind', '12345', 'Agree', 'Dr Okafor was kind', 'Jane Doe'];
+    let seen = '';
+    const fake = async (text: string) => {
+      seen = text;
+      const i = text.indexOf('Okafor');
+      return [{ start: i, end: i + 6, text: 'Okafor', label: 'NAME', category: 'HIPAA', source: 'ner', confidence: 0.99 } as const];
+    };
+    // Leaf 5 ("Jane Doe") is a forced identifier column: not read.
+    const spans = await runNerOnLeaves(values, 1, new Set([5]), {}, fake);
+    expect(seen).toBe('Agree\n\nDr Okafor was kind');
+    const joined = values.join('\u001F');
+    expect(spans.map((s) => joined.slice(s.start, s.end))).toEqual(['Okafor', 'Okafor']);
+    expect(spans.map((s) => s.start)).toEqual([joined.indexOf('Okafor'), joined.lastIndexOf('Okafor')]);
   });
 });
 

@@ -1,5 +1,5 @@
 import { runRules, type Span } from '@/engine/detect';
-import { flexibleWhitespacePattern } from '@/engine/replace';
+import { OriginalFinder } from '@/engine/replace';
 import type { Mode } from '@/lib/constants';
 
 export interface ValidationResult {
@@ -53,21 +53,17 @@ export async function validate(
   deidentifiedText: string,
   options: ValidateOptions
 ): Promise<ValidationResult> {
-  const originalsLeaked: string[] = [];
-  for (const original of options.originalIdentifiers) {
-    if (original.length < 4) continue; // skip very short strings to avoid noise
-    // Only count a verbatim leak when the original appears at a word boundary,
-    // not as a substring of a longer word/phrase. "University Hospital" inside
-    // "University Hospitals of Leicester" is not a leak — the institution name
-    // family is the same, but no identifier survived the redaction.
-    // Internal whitespace matches flexibly (\s+) so extraction-spacing
-    // variants ("Karoline  Stenberg") are caught too — mirrors the residual
-    // sweep in replace.ts, which removes exactly this set.
-    const pattern = flexibleWhitespacePattern(original);
-    if (new RegExp(`(?:^|\\b|\\s)${pattern}(?:$|\\b|\\s)`).test(deidentifiedText)) {
-      originalsLeaked.push(original);
-    }
-  }
+  // Only count a verbatim leak when the original appears at a word boundary,
+  // not as a substring of a longer word/phrase. "University Hospital" inside
+  // "University Hospitals of Leicester" is not a leak — the institution name
+  // family is the same, but no identifier survived the redaction.
+  // Internal whitespace matches flexibly (\s+) so extraction-spacing
+  // variants ("Karoline  Stenberg") are caught too — mirrors the residual
+  // sweep in replace.ts, which removes exactly this set. Very short strings
+  // (< 4 chars) are skipped to avoid noise.
+  const checked = options.originalIdentifiers.filter((o) => o.length >= 4);
+  const found = new Set(new OriginalFinder(checked, 'validate').findAll(deidentifiedText).map((h) => h.original));
+  const originalsLeaked = checked.filter((o, i) => found.has(o) && checked.indexOf(o) === i);
 
   let leaks: Span[] = [];
   if (options.mode === 'ANONYMISE') {

@@ -386,8 +386,38 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-const overlaps = (s: { start: number; end: number }, list: Array<{ start: number; end: number }>) =>
-  list.some((x) => s.start < x.end && x.start < s.end);
+type Range = { start: number; end: number };
+
+/**
+ * Marks covered characters, so "does this overlap anything?" costs the
+ * span's length instead of a scan of every range. A 3-hour recording has
+ * ~12,000 timestamp ranges; scanning them per match was quadratic.
+ */
+class SpanMask {
+  private mask: Uint8Array;
+  constructor(length: number, ...lists: Range[][]) {
+    this.mask = new Uint8Array(length);
+    for (const list of lists) for (const r of list) this.add(r);
+  }
+  add(r: Range): void {
+    this.mask.fill(1, Math.max(0, r.start), Math.min(this.mask.length, r.end));
+  }
+  hits(r: Range): boolean {
+    for (let i = Math.max(0, r.start); i < Math.min(this.mask.length, r.end); i++) if (this.mask[i]) return true;
+    return false;
+  }
+}
+
+const structuralMasks = new WeakMap<TranscriptInfo, SpanMask>();
+function structuralMask(info: TranscriptInfo): SpanMask {
+  let m = structuralMasks.get(info);
+  if (!m) {
+    const length = info.structuralSpans.reduce((n, r) => Math.max(n, r.end), 0);
+    m = new SpanMask(length, info.structuralSpans);
+    structuralMasks.set(info, m);
+  }
+  return m;
+}
 
 /**
  * Forced NAME spans for speakers whose label is a real name: every label
@@ -399,9 +429,11 @@ export function speakerSpans(text: string, info: TranscriptInfo): Span[] {
   const named = info.speakers.filter((s) => s.isName);
   if (named.length === 0) return [];
   const spans: Span[] = [];
+  const taken = new SpanMask(text.length);
   const push = (start: number, end: number) => {
-    if (overlaps({ start, end }, info.structuralSpans)) return;
-    if (spans.some((s) => s.start < end && start < s.end)) return;
+    if (structuralMask(info).hits({ start, end })) return;
+    if (taken.hits({ start, end })) return;
+    taken.add({ start, end });
     spans.push({
       start, end, text: text.slice(start, end), label: 'NAME',
       category: 'HIPAA', source: 'rule', confidence: 1,
@@ -494,7 +526,7 @@ export function nameMentionSpans(
   info: TranscriptInfo,
   existing: Array<{ start: number; end: number }>
 ): Span[] {
-  const covered = [...existing, ...info.structuralSpans];
+  const covered = new SpanMask(text.length, existing, info.structuralSpans);
   const spans: Span[] = [];
   const parts = Array.from(new Set(names.flatMap(nameParts))).sort((a, b) => b.length - a.length);
   for (const part of parts) {
@@ -503,7 +535,8 @@ export function nameMentionSpans(
     let m: RegExpExecArray | null;
     while ((m = re.exec(text))) {
       const s = { start: m.index, end: m.index + m[0].length };
-      if (overlaps(s, covered) || overlaps(s, spans)) continue;
+      if (covered.hits(s)) continue;
+      covered.add(s);
       spans.push({ ...s, text: m[0], label: 'NAME', category: 'HIPAA', source: 'rule', confidence: 1 });
     }
   }
@@ -854,7 +887,7 @@ export function properNounCandidates(
   const coveredWords = new Set(
     covered.map((c) => (c.text ?? text.slice(c.start, c.end)).trim().toLowerCase())
   );
-  const blocked = [...covered, ...info.structuralSpans, ...info.labelSpans];
+  const blocked = new SpanMask(text.length, covered, info.structuralSpans, info.labelSpans);
   const seen = new Set<string>();
   const out: Span[] = [];
   // Preceded by a lower-case letter or a comma/semicolon and a space: mid-sentence.
@@ -866,7 +899,7 @@ export function properNounCandidates(
     if (seen.has(key) || NOT_A_NAME.has(key) || speakerWords.has(key) || coveredWords.has(key)) continue;
     if (lowercaseWords.has(key)) continue;
     const span = { start: m.index, end: m.index + word.length };
-    if (overlaps(span, blocked)) continue;
+    if (blocked.hits(span)) continue;
     seen.add(key);
     out.push({ ...span, text: word, label: 'NAME', category: 'HIPAA', source: 'rule', confidence: 0.55 });
   }
@@ -936,5 +969,6 @@ export function dropStructural<T extends { start: number; end: number }>(
   spans: T[],
   info: TranscriptInfo
 ): T[] {
-  return spans.filter((s) => !overlaps(s, info.structuralSpans));
+  const mask = structuralMask(info);
+  return spans.filter((s) => !mask.hits(s));
 }
