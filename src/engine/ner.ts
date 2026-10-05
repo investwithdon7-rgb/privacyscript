@@ -1,19 +1,18 @@
 /**
  * Transformers.js NER integration.
  *
- * Primary clinical model: `d4data/biomedical-ner-all`.
- *   This is a fine-tuned biomedical NER model with ~107 entity types
- *   (disease, sign/symptom, medication, dosage, etc). We use it when an
- *   ONNX-converted, quantised copy is available (Xenova has not uploaded one
- *   to HF as of 2026-05; the v2 plan is to convert + host on the CDN bundle).
+ * - Always: multilingual PER / LOC / ORG model (`NER_MODELS.multilingual`).
+ * - Optional "thorough check" for English records: a clinical
+ *   de-identification model (`NER_MODELS.clinical`, BERT fine-tuned on the
+ *   i2b2 2014 de-identification corpus) runs as well and its findings are
+ *   added. On test notes the two models miss DIFFERENT names (together they
+ *   miss fewer than either alone) but the clinical one is ~1.5x slower and
+ *   another ~110 MB, so it is off unless the user turns it on.
+ *   (`d4data/biomedical-ner-all`, the earlier plan, tags diseases and drugs,
+ *   not identifiers, so it would not help de-identification.)
  *
- * Generic fallback: `Xenova/bert-base-NER` — already ONNX/INT8 on HF.
- *   We use this in v1 to add PER / LOC / ORG entity coverage on top of the
- *   regex catalogue. It catches free-text names the regex layer cannot.
- *
- * Caching: Transformers.js caches model files in IndexedDB via its own
- *   `env.allowLocalModels = false; env.useBrowserCache = true` defaults.
- *   First load is ~50MB and slow. Subsequent loads are instant.
+ * Caching: Transformers.js caches model files in the browser cache
+ *   (`env.useBrowserCache = true`). Later loads are instant.
  *
  * The pipeline accepts the model being absent — detection still runs purely
  * from regex if the model fails to load (offline first-load with no cache).
@@ -34,7 +33,7 @@ export interface NERStatus {
 
 export const NER_STATUS_INITIAL: NERStatus = {
   available: typeof window !== 'undefined',
-  modelName: 'Xenova/bert-base-NER',
+  modelName: '',
   loaded: false,
   loadProgress: 0,
   message: 'Generic NER model not loaded yet.',
@@ -113,7 +112,7 @@ export function withOffsets(raw: NerOutput[], offsets: Array<[number, number] | 
   return out;
 }
 
-let pipelinePromise: Promise<NerPipeline | null> | null = null;
+const pipelinePromises = new Map<NerModelKey, Promise<NerPipeline | null>>();
 let currentStatus: NERStatus = { ...NER_STATUS_INITIAL };
 const listeners = new Set<(s: NERStatus) => void>();
 
@@ -139,11 +138,129 @@ function setStatus(patch: Partial<NERStatus>) {
  */
 export const NER_MODEL_ID = 'Xenova/distilbert-base-multilingual-cased-ner-hrl';
 
+export type NerModelKey = 'clinical' | 'multilingual';
+
+export interface NerModel {
+  id: string;
+  /** Download size of the quantised weights, for the one-time notice. */
+  sizeMb: number;
+  /** Plain-language name for status messages. */
+  title: string;
+  labels: Record<string, IdentifierLabel | null>;
+}
+
+export const NER_MODELS: Record<NerModelKey, NerModel> = {
+  clinical: {
+    // obi/deid_bert_i2b2 (MIT), ONNX export by the onnx-community org.
+    id: 'onnx-community/deid_bert_i2b2-ONNX',
+    sizeMb: 110,
+    title: 'clinical name-detection model',
+    labels: {
+      PATIENT: 'NAME',
+      STAFF: 'NAME',
+      LOC: 'ADDRESS_LINE',
+      HOSP: 'INSTITUTION',
+      PATORG: 'INSTITUTION',
+      ID: 'REFERENCE_ID',
+      OTHERPHI: 'REFERENCE_ID',
+      PHONE: 'PHONE',
+      EMAIL: 'EMAIL',
+      // Exact dates and ages over 89 come from the rules; the model also tags
+      // ordinary ages and vague dates, which are not identifiers.
+      DATE: null,
+      AGE: null,
+    },
+  },
+  multilingual: {
+    id: NER_MODEL_ID,
+    sizeMb: 135,
+    title: 'multilingual name-detection model',
+    labels: {
+      PER: 'NAME',
+      LOC: 'ADDRESS_LINE',
+      ORG: 'INSTITUTION',
+      MISC: null,
+      // The multilingual model also tags dates, including vague ones ("last
+      // summer"). Exact dates are caught by the rule engine; redacting every
+      // time phrase would strip context researchers need.
+      DATE: null,
+    },
+  },
+};
+
+const STOPWORDS: Record<string, string[]> = {
+  en: 'the and of to with is was in for on she he her his patient had has be are this that at by from were not no'.split(' '),
+  es: 'el la de que y en los las del por con una para es se su al lo como más pero'.split(' '),
+  de: 'der die und das ist nicht mit sie ich ein eine den von zu auf für dem des sich auch'.split(' '),
+  fr: 'le la les et des est une pour que dans pas qui sur avec il elle du au ce'.split(' '),
+  nl: 'de het een en van is dat niet ik zijn op te met voor ze die er ook maar'.split(' '),
+  it: 'il la di che e non è per una sono con mi si lo gli della anche ma'.split(' '),
+  pt: 'o a de que e do da em um para é com não uma os no se na por mais'.split(' '),
+};
+
+/**
+ * True when the text reads as English, or has too few words to tell (a DICOM
+ * header, a terse note). The clinical model only knows English.
+ */
+export function readsAsEnglish(text: string): boolean {
+  const words = text.slice(0, 20000).toLowerCase().match(/\p{L}+/gu) ?? [];
+  const score: Record<string, number> = {};
+  for (const [lang, list] of Object.entries(STOPWORDS)) {
+    const set = new Set(list);
+    score[lang] = words.reduce((n, w) => n + (set.has(w) ? 1 : 0), 0);
+  }
+  const other = Math.max(...Object.entries(score).filter(([l]) => l !== 'en').map(([, n]) => n));
+  return other < 5 || score.en >= other;
+}
+
+// ─── Thorough check (per-device preference, not data) ───────────────────
+const THOROUGH_KEY = 'privacyscript.thoroughNames';
+let thorough: boolean | null = null;
+const thoroughListeners = new Set<(on: boolean) => void>();
+
+export function getThoroughCheck(): boolean {
+  if (thorough === null) {
+    try {
+      thorough = typeof localStorage !== 'undefined' && localStorage.getItem(THOROUGH_KEY) === '1';
+    } catch {
+      thorough = false;
+    }
+  }
+  return thorough;
+}
+
+export function setThoroughCheck(on: boolean): void {
+  thorough = on;
+  try {
+    localStorage.setItem(THOROUGH_KEY, on ? '1' : '0');
+  } catch {
+    /* private mode: setting lasts for this visit */
+  }
+  for (const fn of thoroughListeners) fn(on);
+  if (on) preloadNer();
+}
+
+export function subscribeThoroughCheck(fn: (on: boolean) => void): () => void {
+  thoroughListeners.add(fn);
+  return () => thoroughListeners.delete(fn);
+}
+
+/** Models to run on this text. */
+export function modelsFor(text: string, thoroughOn = getThoroughCheck()): NerModelKey[] {
+  return thoroughOn && readsAsEnglish(text) ? ['multilingual', 'clinical'] : ['multilingual'];
+}
+
+export function downloadNotice(key: NerModelKey): string {
+  const m = NER_MODELS[key];
+  return `Downloading the ${m.title} (~${m.sizeMb} MB, once)…`;
+}
+
 /**
  * Load the token-classification pipeline. Shared by the background worker
  * and the in-page fallback; works in either context (no window access).
  */
 export async function loadNerPipeline(
+  key: NerModelKey,
   onProgress?: (pct: number, message: string) => void
 ): Promise<NerPipeline> {
   const tx = await import('@xenova/transformers');
@@ -160,8 +277,8 @@ export async function loadNerPipeline(
 
   // Allow remote model fetch; cache in IndexedDB.
   tx.env.allowLocalModels = false;
-  tx.env.useBrowserCache = true;
-  const pipeline = await tx.pipeline('token-classification', NER_MODEL_ID, {
+  tx.env.useBrowserCache = typeof caches !== 'undefined';
+  const pipeline = await tx.pipeline('token-classification', NER_MODELS[key].id, {
     quantized: true,
     progress_callback: (p: { progress?: number; status?: string }) => {
       if (typeof p.progress === 'number') {
@@ -177,14 +294,15 @@ export async function loadNerPipeline(
  * when a background worker cannot be created. Returns null where
  * Transformers cannot run (SSR / Node tests). Memoised.
  */
-export function ensureNerLoaded(): Promise<NerPipeline | null> {
+export function ensureNerLoaded(key: NerModelKey): Promise<NerPipeline | null> {
   if (typeof window === 'undefined') return Promise.resolve(null);
-  if (pipelinePromise) return pipelinePromise;
+  const existing = pipelinePromises.get(key);
+  if (existing) return existing;
 
-  pipelinePromise = (async () => {
-    setStatus({ message: 'Downloading name-detection model (~135 MB, once)…', loadProgress: 0 });
+  const promise = (async () => {
+    setStatus({ modelName: NER_MODELS[key].id, message: downloadNotice(key), loadProgress: 0 });
     try {
-      const pipeline = await loadNerPipeline((pct, message) =>
+      const pipeline = await loadNerPipeline(key, (pct, message) =>
         setStatus({ loadProgress: pct, message })
       );
       setStatus({
@@ -204,25 +322,9 @@ export function ensureNerLoaded(): Promise<NerPipeline | null> {
       return null;
     }
   })();
-
-  return pipelinePromise;
+  pipelinePromises.set(key, promise);
+  return promise;
 }
-
-/**
- * Map Xenova/bert-base-NER's BIO labels (B-PER, I-PER, B-LOC, I-LOC, B-ORG, I-ORG,
- * B-MISC, I-MISC) onto our IdentifierLabel set. PER → NAME (stored as a custom
- * label in the engine since we don't auto-redact via regex; NER provides it).
- */
-const NER_LABEL_MAP: Record<string, IdentifierLabel | null> = {
-  PER: 'NAME',
-  LOC: 'ADDRESS_LINE',
-  ORG: 'INSTITUTION',
-  MISC: null,
-  // The multilingual model also tags dates, including vague ones ("last
-  // summer"). Exact dates are caught by the rule engine; redacting every
-  // time phrase would strip context researchers need.
-  DATE: null,
-};
 
 interface EntityGroup {
   type: string;
@@ -250,9 +352,10 @@ export function aggregateEntities(raw: PositionedNer[], text: string): EntityGro
 
   for (const e of raw) {
     const tag = e.entity_group ?? e.entity;
-    const type = tag.replace(/^[BI]-/, '');
+    // BIO (multilingual) and BILOU (clinical) tags: I- and L- continue.
+    const type = tag.replace(/^[BILU]-/, '');
     const isContinuation =
-      tag.startsWith('I-') || (current !== null && e.start === current.end);
+      tag.startsWith('I-') || tag.startsWith('L-') || (current !== null && e.start === current.end);
     const gap = current ? text.slice(current.end, e.start) : '';
 
     if (current && type === current.type && isContinuation && /^\s?$/.test(gap)) {
@@ -288,10 +391,15 @@ const NER_DOCUMENT_WORDS = new Set([
  * and drop anything under 3 characters — those are stray subword tokens with
  * no identifying value, pure noise in the review UI.
  */
-export function rawNerToSpans(raw: PositionedNer[], text: string, offset: number): Span[] {
+export function rawNerToSpans(
+  raw: PositionedNer[],
+  text: string,
+  offset: number,
+  labels: Record<string, IdentifierLabel | null> = NER_MODELS.multilingual.labels
+): Span[] {
   const spans: Span[] = [];
   for (const g of aggregateEntities(raw, text)) {
-    const label = NER_LABEL_MAP[g.type] ?? null;
+    const label = labels[g.type] ?? null;
     if (!label) continue;
 
     let start = g.start;
@@ -301,7 +409,16 @@ export function rawNerToSpans(raw: PositionedNer[], text: string, offset: number
 
     const value = text.slice(start, end);
     if (value.trim().length < 3) continue;
-    if (NER_DOCUMENT_WORDS.has(value.trim().toLowerCase())) continue;
+    if (NER_DOCUMENT_WORDS.has(value.trim().toLowerCase())) {
+      // On its own "WARD" is a heading; straight after a name ("DR SUSAN
+      // WARD") it is the surname: extend that name instead of dropping it.
+      const prev = spans[spans.length - 1];
+      if (prev && prev.label === label && /^ ?$/.test(text.slice(prev.end - offset, start))) {
+        prev.end = end + offset;
+        prev.text = text.slice(prev.start - offset, end);
+      }
+      continue;
+    }
 
     spans.push({
       start: start + offset,
@@ -325,6 +442,8 @@ export interface NerRunOptions {
   skip?: Array<{ start: number; end: number }>;
   /** Called after each chunk: done of total. */
   onProgress?: (done: number, total: number) => void;
+  /** Force the models; by default see modelsFor(). */
+  models?: NerModelKey[];
 }
 
 export class NerCancelledError extends Error {
@@ -347,6 +466,23 @@ export function maskRanges(text: string, ranges: Array<{ start: number; end: num
 }
 
 /**
+ * Rewrite ALL-CAPS lines in title case for the model ("DR SUSAN WARD" →
+ * "Dr Susan Ward"). Cased models barely recognise names in capitals, and
+ * clinical headers are full of them. Every character keeps its position, so
+ * spans still map onto the original text.
+ */
+export function softenCaps(text: string): string {
+  return text.replace(/[^\n]+/g, (line) => {
+    const letters = line.match(/\p{L}/gu) ?? [];
+    if (letters.length < 4) return line;
+    const upper = letters.filter((c) => c !== c.toLowerCase()).length;
+    if (upper / letters.length < 0.8) return line;
+    const soft = line.replace(/\p{L}+/gu, (w) => w[0] + w.slice(1).toLowerCase());
+    return soft.length === line.length ? soft : line;
+  });
+}
+
+/**
  * Run the model over `text`, chunk by chunk. Shared core of the worker and
  * the in-page fallback. Chunks run one after another so progress is real and
  * cancellation takes effect between chunks.
@@ -354,14 +490,21 @@ export function maskRanges(text: string, ranges: Array<{ start: number; end: num
 export async function nerOnText(
   pipe: NerPipeline,
   text: string,
-  opts: { onProgress?: (done: number, total: number) => void; isCancelled?: () => boolean } = {}
+  opts: {
+    onProgress?: (done: number, total: number) => void;
+    isCancelled?: () => boolean;
+    model?: NerModelKey;
+  } = {}
 ): Promise<Span[]> {
+  const labels = NER_MODELS[opts.model ?? 'multilingual'].labels;
   // The character budget assumes ~4 chars per token, which fails badly for
   // timestamp- or number-heavy text (a caption timing line is ~20 tokens).
   // Anything past 512 tokens is silently truncated by the model, so split
   // each chunk further until it really fits.
   // Generous character budget: masked (blank) text costs no tokens, and
   // fitToModel below splits anything that exceeds the real token window.
+  const original = text;
+  text = softenCaps(text);
   const chunks = splitForNer(text, 4000)
     .flatMap((c) => fitToModel(pipe, c))
     .filter((c) => c.text.trim().length > 0);
@@ -372,11 +515,11 @@ export async function nerOnText(
   const out: Span[] = [];
   for (let i = 0; i < chunks.length; i++) {
     if (opts.isCancelled?.()) throw new NerCancelledError();
-    for (const s of await nerOneChunk(pipe, chunks[i].text, chunks[i].offset)) {
+    for (const s of await nerOneChunk(pipe, chunks[i].text, chunks[i].offset, labels)) {
       const key = `${s.start}|${s.end}|${s.label}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push(s);
+      out.push({ ...s, text: original.slice(s.start, s.end) });
     }
     opts.onProgress?.(i + 1, chunks.length);
   }
@@ -447,16 +590,53 @@ function getNerWorker(): Worker | null {
 export async function runClinicalNER(text: string, opts: NerRunOptions = {}): Promise<Span[]> {
   if (typeof window === 'undefined') return [];
   const input = opts.skip?.length ? maskRanges(text, opts.skip) : text;
+  const models = opts.models ?? modelsFor(input);
+  // Models run one after the other; progress spans all of them. Their spans
+  // are simply concatenated: detect() merges overlaps.
+  const out: Span[] = [];
+  for (let m = 0; m < models.length; m++) {
+    const onProgress = opts.onProgress
+      ? (done: number, total: number) => opts.onProgress!(m * total + done, models.length * total)
+      : undefined;
+    out.push(...(await runOneModel(input, models[m], onProgress)));
+  }
+  return models.length > 1 ? dropCoveredSpans(out) : out;
+}
+
+/**
+ * Two models often find the same thing: "JOHN BAKER" (sure) and "BAKER"
+ * (unsure). A span lying inside a more confident one adds nothing and would
+ * only put an extra question to the user, so it is dropped.
+ */
+export function dropCoveredSpans(spans: Span[]): Span[] {
+  return spans.filter(
+    (s) =>
+      !spans.some(
+        (t) =>
+          t !== s &&
+          t.start <= s.start &&
+          t.end >= s.end &&
+          ((t.confidence ?? 0) > (s.confidence ?? 0) ||
+            ((t.confidence ?? 0) === (s.confidence ?? 0) && t.end - t.start > s.end - s.start))
+      )
+  );
+}
+
+async function runOneModel(
+  input: string,
+  model: NerModelKey,
+  onProgress?: (done: number, total: number) => void
+): Promise<Span[]> {
   const worker = getNerWorker();
   if (!worker) {
-    const pipe = await ensureNerLoaded();
+    const pipe = await ensureNerLoaded(model);
     if (!pipe) return [];
-    return nerOnText(pipe, input, { onProgress: opts.onProgress });
+    return nerOnText(pipe, input, { onProgress, model });
   }
   return new Promise<Span[]>((resolve, reject) => {
     const id = ++nextRequestId;
-    pendingRuns.set(id, { resolve, reject, onProgress: opts.onProgress });
-    worker.postMessage({ type: 'run', id, text: input });
+    pendingRuns.set(id, { resolve, reject, onProgress });
+    worker.postMessage({ type: 'run', id, text: input, model });
   });
 }
 
@@ -467,9 +647,12 @@ export async function runClinicalNER(text: string, opts: NerRunOptions = {}): Pr
  */
 export function preloadNer(): void {
   if (typeof window === 'undefined') return;
+  const models: NerModelKey[] = getThoroughCheck() ? ['multilingual', 'clinical'] : ['multilingual'];
   const worker = getNerWorker();
-  if (worker) worker.postMessage({ type: 'load' });
-  else void ensureNerLoaded();
+  for (const model of models) {
+    if (worker) worker.postMessage({ type: 'load', model });
+    else void ensureNerLoaded(model);
+  }
 }
 
 /** Stop any running detection. Pending calls reject with NerCancelledError. */
@@ -481,7 +664,8 @@ export function cancelNer(): void {
 async function nerOneChunk(
   pipe: NerPipeline,
   text: string,
-  offset: number
+  offset: number,
+  labels: Record<string, IdentifierLabel | null>
 ): Promise<Span[]> {
   if (text.trim().length === 0) return [];
   try {
@@ -496,7 +680,7 @@ async function nerOneChunk(
     const positioned = raw.filter(
       (e): e is PositionedNer => typeof e.start === 'number' && typeof e.end === 'number'
     );
-    return rawNerToSpans(positioned, text, offset);
+    return rawNerToSpans(positioned, text, offset, labels);
   } catch (err) {
     // In the worker, setStatus only updates the worker's own copy; the error
     // is surfaced to the page through the returned (empty) result instead.

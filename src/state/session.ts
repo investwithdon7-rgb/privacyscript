@@ -77,6 +77,8 @@ export interface SessionState {
   scriptWarning: ScriptWarning | null;
   /** Live progress of the background name detection (null when idle). */
   nerProgress: { phase: 'detect' | 'validate'; done: number; total: number } | null;
+  /** Name-detection models run on this file (for the audit log). */
+  nerModels: string[];
   /** User confirmed they will review the unreadable passages themselves (PARTIAL only). */
   scriptAcknowledged: boolean;
   /** Progress within the 6 pipeline stages, 0–6. */
@@ -117,6 +119,7 @@ const INITIAL: SessionState = {
   scriptWarning: null,
   scriptAcknowledged: false,
   nerProgress: null,
+  nerModels: [],
   stageIndex: 0,
   quasiConfirmed: false,
   error: null,

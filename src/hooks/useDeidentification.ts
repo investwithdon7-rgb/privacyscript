@@ -1,7 +1,7 @@
 'use client';
 
 import { detect, type Span } from '@/engine/detect';
-import { NerCancelledError, runClinicalNER } from '@/engine/ner';
+import { getNerStatus, modelsFor, NER_MODELS, NerCancelledError, runClinicalNER } from '@/engine/ner';
 import { replaceSpans, type ReplacementResult } from '@/engine/replace';
 import { assessRisk, type RiskAssessment } from '@/engine/risk';
 import { validate } from '@/engine/validate';
@@ -269,7 +269,10 @@ export async function ingestAndDetect(file: File): Promise<void> {
     // carry confidence 1, so they always land in the auto-accepted bucket.
     // The model reads only what people wrote or said: caption timings, cue
     // IDs and speaker labels are masked (speakers are handled by rules).
+    const nerModels = modelsFor(text);
+    updateSession({ nerModels: nerModels.map((m) => NER_MODELS[m].id) });
     const nerSpans = await runClinicalNER(text, {
+      models: nerModels,
       skip: transcriptInfo ? [...transcriptInfo.structuralSpans, ...transcriptInfo.labelSpans] : [],
       onProgress: (done, total) => updateSession({ nerProgress: { phase: 'detect', done, total } }),
     });
@@ -751,6 +754,11 @@ export async function finalise(): Promise<void> {
     const tabularNotes = tab && tabularOut ? tabularAuditNotes(tab, tabularOut) : [];
     if (tr) tabularNotes.push(...transcriptAuditNotes(tr));
     if (dicomOut) tabularNotes.push(...dicomOut.notes);
+    tabularNotes.push(
+      getNerStatus().error
+        ? `Name detection: model could not load (${getNerStatus().error}); rules ran alone.`
+        : `Name detection models: ${s.nerModels.join(' + ') || 'none'}.`
+    );
     if (s.scriptWarning) {
       tabularNotes.push(
         `Unreadable script (${s.scriptWarning.scripts.join(', ') || 'non-Latin'}): ${Math.round(s.scriptWarning.unreadableRatio * 100)}% of letters could not be checked automatically. The user confirmed they reviewed those passages manually.`
