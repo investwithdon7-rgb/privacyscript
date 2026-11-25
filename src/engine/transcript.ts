@@ -144,6 +144,10 @@ const NOT_A_SPEAKER = new Set([
   'address', 'postcode', 'name',
 ]);
 
+/** "Hm: okay, …" — a filler the captioner wrote before a colon, not a speaker. */
+const FILLER_LABEL_RE =
+  /^(?:h+m+|m+h+m+|mm+|uh+m*|um+|ah+|äh+m*|öh+m*|eh+m*|oh+|ok(?:ay)?|ja|nee|nein|yes|yeah|no|so|also|genau|gut|vale|bueno|pues|oui|non|si|sí)$/i;
+
 const GENERIC_SPEAKER_RE =
   /^(?:interviewer|moderator|facilitator|researcher|respondent|participant|interviewee|speaker|unknown(?: speaker)?|int|iv|ie|mod|fac|res|resp|r|i|p|q|a|pt|fg\d*)(?:[ \t]*#?\d{1,3}[a-z]?)?$|^[A-Z]{1,3}\d{1,3}$/i;
 const INTERVIEWER_LABEL_RE = /^(?:interviewer|moderator|facilitator|researcher|int|iv|mod|fac|i|q)\b/i;
@@ -182,10 +186,15 @@ export function analyseTranscript(text: string): TranscriptInfo | null {
   }
 
   const addLabel = (start: number, raw: string) => {
-    const label = raw.trim().replace(/\s+/g, ' ');
-    if (!label || NOT_A_SPEAKER.has(label.toLowerCase())) return;
-    const offset = raw.indexOf(raw.trim());
-    labelSpans.push({ start: start + offset, end: start + offset + raw.trim().length, speaker: label });
+    // "[Helen Carter] 12:19:14" (Zoom transcript export): the brackets are
+    // not part of the name, or "[Helen" would never match "Helen" in speech.
+    const trimmed = raw.trim();
+    const inner = /^[\[(]\s*([^\])]+?)\s*[\])]$/.exec(trimmed);
+    const core = inner ? inner[1] : trimmed;
+    const label = core.replace(/\s+/g, ' ');
+    if (!label || NOT_A_SPEAKER.has(label.toLowerCase()) || FILLER_LABEL_RE.test(label)) return;
+    const offset = raw.indexOf(core);
+    labelSpans.push({ start: start + offset, end: start + offset + core.length, speaker: label });
   };
 
   let chatCount = 0;
@@ -379,7 +388,9 @@ export function nameParts(label: string): string[] {
     .split(/\s+/)
     .map((w) => w.replace(/[.,'’]+$/g, ''))
     .filter((w) => w.length >= 3 && !TITLES.has(w.toLowerCase()));
-  return Array.from(new Set([label, ...words]));
+  // Double-barrelled surnames are spoken one half at a time ("Frau Trialonis").
+  const halves = words.flatMap((w) => (w.includes('-') ? w.split('-') : [])).filter((w) => w.length >= 3);
+  return Array.from(new Set([label, ...words, ...halves]));
 }
 
 function escapeRegExp(s: string): string {
@@ -440,7 +451,14 @@ export function speakerSpans(text: string, info: TranscriptInfo): Span[] {
     });
   };
   const namedSet = new Set(named.map((s) => s.label));
-  for (const l of info.labelSpans) if (namedSet.has(l.speaker)) push(l.start, l.end);
+  for (const l of info.labelSpans) {
+    if (!namedSet.has(l.speaker)) continue;
+    // "[Helen Carter] 12:19:14": replace the brackets too, so the output
+    // reads "[Participant 1] 12:19:14", not "[[Participant 1]]".
+    const bracketed = /[\[(]/.test(text[l.start - 1] ?? '') && /[\])]/.test(text[l.end] ?? '');
+    if (bracketed) push(l.start - 1, l.end + 1);
+    else push(l.start, l.end);
+  }
 
   // Longest first so "Helen Carter" wins over "Helen".
   const parts = Array.from(new Set(named.flatMap((s) => nameParts(s.label)))).sort(
@@ -455,8 +473,8 @@ export function speakerSpans(text: string, info: TranscriptInfo): Span[] {
   // Speech-to-text often mishears a speaker's own name ("Marcus" for
   // "Marcos"). Catch close spellings of a speaker's name parts.
   const single = parts.filter((p) => !/\s/.test(p));
-  const lowercaseWords = new Set(text.match(/\b[a-z][a-z'’]+\b/g) ?? []);
-  const wordRe = /(?<![\w'’])[A-Z][a-z]{3,}(?![\w'’])/g;
+  const lowercaseWords = new Set(text.match(/(?<![\p{L}'’])\p{Ll}[\p{L}'’]+/gu) ?? []);
+  const wordRe = /(?<![\p{L}\d'’])\p{Lu}\p{Ll}{3,}(?![\p{L}\d'’])/gu;
   let w: RegExpExecArray | null;
   while ((w = wordRe.exec(text))) {
     // A word also used in lower case ("hello") is ordinary vocabulary.
@@ -472,11 +490,24 @@ export function speakerSpans(text: string, info: TranscriptInfo): Span[] {
  * names) or two edits (6+). Shorter names are never fuzzy-matched.
  */
 export function isSpeakerVariant(word: string, name: string): boolean {
-  const a = word.toLowerCase();
-  const b = name.toLowerCase();
-  if (a === b || b.length < 5) return false;
-  if (a.slice(0, 2) !== b.slice(0, 2) || Math.abs(a.length - b.length) > 1) return false;
+  if (word.toLowerCase() === name.toLowerCase()) return false;
+  // "Schroedter" / "Schröter" / "Schroter": compare umlauts spelled out.
+  const a = foldUmlauts(word);
+  const b = foldUmlauts(name);
+  if (a === b) return true;
+  if (b.length < 5) return false;
+  // Long names lose a letter or two in speech-to-text ("Nirosha" for
+  // "Nirohshah"); short ones must stay within one letter of length.
+  const maxLengthGap = b.length >= 8 ? 2 : 1;
+  if (a.slice(0, 2) !== b.slice(0, 2) || Math.abs(a.length - b.length) > maxLengthGap) return false;
   return editDistance(a, b) <= (b.length >= 6 ? 2 : 1);
+}
+
+function foldUmlauts(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '');
 }
 
 function editDistance(a: string, b: string): number {
@@ -763,7 +794,9 @@ export function transcriptLabeller(
     const key = norm(original);
     if (label === 'REFERENCE_ID' && removed.has(key)) return REMOVED_PASSAGE;
     if (label === 'NAME') {
-      const sp = speakerOf.get(key) ?? speakerOf.get(norm(stripTitle(original)));
+      const bare = original.replace(/^\s*[\[(]\s*|\s*[\])]\s*$/g, '');
+      const sp =
+        speakerOf.get(key) ?? speakerOf.get(norm(bare)) ?? speakerOf.get(norm(stripTitle(original)));
       if (sp) return sp;
       // A misheard spelling of a speaker's name is that speaker.
       const words = stripTitle(original).trim().split(/\s+/);
@@ -888,6 +921,7 @@ export function properNounCandidates(
     covered.map((c) => (c.text ?? text.slice(c.start, c.end)).trim().toLowerCase())
   );
   const blocked = new SpanMask(text.length, covered, info.structuralSpans, info.labelSpans);
+  const nouns = info.language === 'de' ? germanNouns(text) : null;
   const seen = new Set<string>();
   const out: Span[] = [];
   // Preceded by a lower-case letter or a comma/semicolon and a space: mid-sentence.
@@ -897,13 +931,58 @@ export function properNounCandidates(
     const word = m[0];
     const key = word.toLowerCase();
     if (seen.has(key) || NOT_A_NAME.has(key) || speakerWords.has(key) || coveredWords.has(key)) continue;
-    if (lowercaseWords.has(key)) continue;
+    if (lowercaseWords.has(key) || nouns?.has(key)) continue;
     const span = { start: m.index, end: m.index + word.length };
     if (blocked.hits(span)) continue;
     seen.add(key);
     out.push({ ...span, text: word, label: 'NAME', category: 'HIPAA', source: 'rule', confidence: 0.55 });
   }
   return out;
+}
+
+// Case-sensitive on purpose ("Der" or "der", but the noun after it must be
+// capitalised): with the i flag \p{Lu} matches lower case too.
+const DE_DETERMINER =
+  '(?:' +
+  'der die das den dem des ein eine einen einem einer eines kein mein dein sein ihr unser eur dies jed welch manch solch viel wenig all beid ander zum zur im am vom beim ins ans aufs ums übers'
+    .split(' ')
+    .map((w) => `[${w[0]}${w[0].toUpperCase()}]${w.slice(1)}${/^(?:der|die|das|den|dem|des|zum|zur|im|am|vom|beim|ins|ans|aufs|ums|übers)$/.test(w) ? '' : '\\p{Ll}*'}`)
+    .join('|') +
+  ')';
+/** Article (+ up to two lower-case adjectives) before a capitalised word. */
+const DE_AFTER_DETERMINER_RE = new RegExp(
+  String.raw`(?<![\p{L}])${DE_DETERMINER}\s+(?:\p{Ll}[\p{L}-]*\s+){0,2}(\p{Lu}\p{Ll}+)(?![\p{L}])`,
+  'gu'
+);
+// Only endings no common first name or surname has: not -ie (Marie), -ur
+// (Arthur), -ik (Erik), -anz/-enz (Franz, Lorenz), -nis (Dennis).
+const DE_NOUN_SUFFIX_RE =
+  /(?:ung|ungen|heit|heiten|keit|keiten|schaft|schaften|tion|tionen|sion|sionen|täten|nisse|ismus|ment|mente|lein|ität|logie|gramm|zettel|praxis|team|stadium|system|studie|termin|zeit|jahr|woche|monat|stunde)$/;
+/** A name after an article is marked as one: "Frau Müller", "ich heiße Lena". */
+const DE_NAME_CONTEXT_RE =
+  /(?<![\p{L}])(?:frau|herr|herrn|dr\.?|doktor|prof\.?|professor(?:in)?|schwester|pfleger(?:in)?|heiße|heisse|name\s+ist|bin\s+(?:die|der))\s+(\p{Lu}\p{Ll}+)/giu;
+
+/**
+ * German capitalises every noun, so "capitalised mid-sentence, never lower
+ * case" — the name signal in English or Spanish — is true of "Kindergarten"
+ * and "Medikament" too. A word that follows an article ("die Tochter", "im
+ * Büro") or ends like a noun ("-ung", "-heit") is ordinary vocabulary, unless
+ * a title or "ich heiße" marks it as a name somewhere.
+ */
+function germanNouns(text: string): Set<string> {
+  const names = new Set<string>();
+  let m: RegExpExecArray | null;
+  DE_NAME_CONTEXT_RE.lastIndex = 0;
+  while ((m = DE_NAME_CONTEXT_RE.exec(text))) names.add(m[1].toLowerCase());
+  const nouns = new Set<string>();
+  DE_AFTER_DETERMINER_RE.lastIndex = 0;
+  while ((m = DE_AFTER_DETERMINER_RE.exec(text))) nouns.add(m[1].toLowerCase());
+  for (const w of text.match(/(?<![\p{L}])\p{Lu}\p{Ll}{3,}(?![\p{L}])/gu) ?? []) {
+    const key = w.toLowerCase();
+    if (key.length >= 6 && DE_NOUN_SUFFIX_RE.test(key)) nouns.add(key);
+  }
+  for (const n of Array.from(names)) nouns.delete(n);
+  return nouns;
 }
 
 /**

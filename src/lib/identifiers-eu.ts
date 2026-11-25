@@ -176,7 +176,10 @@ const EU_INSURANCE_PATTERN = new RegExp(
     String.raw`tessera\s+sanitaria|codice\s+sanitario|n\.\s*tessera|` +
     String.raw`polisnummer|verzekerdennummer|zorgverzekeringsnummer|` +
     String.raw`n[uú]mero\s+(?:de\s+)?benefici[aá]rio|n[uú]mero\s+(?:de\s+)?seguran[cç]a\s+social|NISS|NSS|SVNR|SV-?Nummer|Sozialversicherungsnummer)` +
-    String.raw`\s*[:.#\-]?\s*([A-Z0-9][A-Z0-9\-\/]{3,19}(?:[ \t]\d{2,6}){0,4})`,
+    // The keyword must end the word ("NIR", not "Nirosha" or "nirgends") and
+    // the value must hold a digit: the flag is case-insensitive, so a
+    // letters-only capture would be whatever word comes next.
+    String.raw`(?![\p{L}])\s*[:.#\-]?\s*(?=[A-Z\-\/]*\d)([A-Z0-9][A-Z0-9\-\/]{3,19}(?:[ \t]\d{2,6}){0,4})`,
   'giu'
 );
 
@@ -302,7 +305,7 @@ const DE_KVNR_PATTERN = /(?<![\dA-Z])[A-Z]\d{9}(?![\dA-Z])/g;
 const PT_NIF_PATTERN = /(?<![\p{L}])(?:NIF|contribuinte|n\.?[º°]\s*fiscal)\s*[:.#\-]?\s*(\d{9})(?!\d)/giu;
 const AT_SVNR_PATTERN = /(?<![\p{L}])(?:SVNR|SV-?Nummer|Sozialversicherungsnummer|Versicherungsnummer)\s*[:.#\-]?\s*(\d{4}\s?\d{6})(?!\d)/giu;
 const DE_TAX_ID_PATTERN = /(?<![\p{L}])(?:Steuer-?ID|Steuer-?IdNr\.?|IdNr\.?|Steueridentifikationsnummer)\s*[:.#\-]?\s*(\d{2}\s?\d{3}\s?\d{3}\s?\d{3})(?!\d)/giu;
-const ID_CARD_PATTERN = /(?<![\p{L}])(?:Personalausweis(?:nummer)?|Ausweisnummer|carte\s+d'identit[eé]|CNI|carta\s+d'identit[àa]|identiteitskaart|cart[aã]o\s+de\s+cidad[aã]o|CC|documento\s+de\s+identidad)\s*(?:n[º°r.]*)?\s*[:.#\-]?\s*([A-Z0-9][A-Z0-9 ]{5,14}[A-Z0-9])(?![A-Z0-9])/giu;
+const ID_CARD_PATTERN = /(?<![\p{L}])(?:Personalausweis(?:nummer)?|Ausweisnummer|carte\s+d'identit[eé]|CNI|carta\s+d'identit[àa]|identiteitskaart|cart[aã]o\s+de\s+cidad[aã]o|CC|documento\s+de\s+identidad)(?![\p{L}])\s*(?:n[º°r.]*)?\s*[:.#\-]?\s*(?=[A-Z ]*\d)([A-Z0-9][A-Z0-9 ]{5,14}[A-Z0-9])(?![A-Z0-9])/giu;
 // Mexico
 const MX_CURP_PATTERN = /(?<![A-Z0-9])[A-Z][AEIOUX][A-Z]{2}\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[HMX](?:AS|BC|BS|CC|CL|CM|CS|CH|DF|DG|GT|GR|HG|JC|MC|MN|MS|NT|NL|OC|PL|QT|QR|SP|SL|SR|TC|TS|TL|VZ|YN|ZS|NE)[B-DF-HJ-NP-TV-Z]{3}[A-Z\d]\d(?![A-Z0-9])/g;
 const MX_RFC_PATTERN = /(?<![A-Z0-9])[A-ZÑ&]{3,4}\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])[A-Z\d]{2}[A\d](?![A-Z0-9])/g;
