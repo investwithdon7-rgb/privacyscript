@@ -151,6 +151,17 @@ describe('EU language records (rules only)', () => {
     }
   });
 
+  it('does not read insurance or ID-card keywords inside ordinary words or names', () => {
+    // "NIR", "CC", "CNI" are case-insensitive keywords: they must end a word
+    // and be followed by a value with a digit.
+    const text = 'Ich bin die Nirosha. Nirgends war es besser. Accident and Cnidaria. Nir Barkat called.';
+    const labels = runRules(text).map((s) => s.label);
+    expect(labels).not.toContain('INSURANCE_ID');
+    expect(labels).not.toContain('NATIONAL_ID');
+    expect(runRules('Versichertennummer: A123456780').some((s) => s.label === 'INSURANCE_ID')).toBe(true);
+    expect(runRules('NIR : 1 84 02 76 451 089 80').some((s) => s.text === '1 84 02 76 451 089 80')).toBe(true);
+  });
+
   it('does not take ordinary numbers or English phrases for identifiers', () => {
     const text = 'The meeting took place Monday. Dose 10000 units daily. Order 123456789 was shipped. Call ext 4471.';
     const labels = runRules(text).map((s) => `${s.label}:${s.text}`);

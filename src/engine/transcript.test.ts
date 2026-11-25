@@ -328,6 +328,51 @@ describe('Dutch and German transcripts', () => {
   });
 });
 
+describe('Zoom "[Name] 12:19:14" transcripts in German', () => {
+  const ZOOM_DE =
+    `[Karoline Westphal-Brandauer] 12:19:14\nHallo, ich bin die Karolin, ganz langer Name Westphal. Wie geht es Ihnen heute?\n\n` +
+    `[Henrik Köhler] 12:19:20\nJa, gut. Meine Tochter geht in den Kindergarten, und das Medikament hilft.\n\n` +
+    `[Karoline Westphal-Brandauer] 12:19:30\nHm: Okay, und wie war die Behandlung in der Praxis?\n\n` +
+    `[Henrik Köhler] 12:19:41\nDie Ärztin in Kleinbrück ist sehr nett. Sie hat mit Dr. Ostermann gesprochen.\n\n` +
+    `[Karoline Westphal-Brandauer] 12:19:55\nVielen Dank, Herr Koehler. Nirgends ist es so gut, sagen alle.\n`;
+
+  it('reads the speaker without brackets, ignores "Hm:" and replaces labels cleanly', async () => {
+    const info = analyseTranscript(ZOOM_DE)!;
+    expect(info.language).toBe('de');
+    expect(info.speakers.map((s) => s.label)).toEqual(['Karoline Westphal-Brandauer', 'Henrik Köhler']);
+    const det = detectTranscript(ZOOM_DE, info, []);
+    const out = await replaceSpans(ZOOM_DE, det.spans, det.quasiSpans, {
+      mode: 'ANONYMISE',
+      quasiToRedact: new Set(det.quasiSpans.map((q) => q.label)),
+      labeller: transcriptLabeller(info, true, []),
+    });
+    expect(out.text).toMatch(/^\[Interviewer\] 12:19:14$/m);
+    expect(out.text).toMatch(/^\[Participant 1\] 12:19:20$/m);
+    expect(out.text).not.toContain('[[');
+    // Misheard first name, one half of a double-barrelled surname, and a
+    // spelled-out umlaut are all the speaker.
+    expect(out.text).not.toMatch(/Karolin|Westphal|Brandauer|Henrik|Köhler|Koehler/);
+    // "Nirgends" is an ordinary word, not a French NIR insurance number.
+    expect(out.text).toContain('Nirgends ist es so gut');
+    expect(out.text).not.toContain('INSURANCE');
+  });
+
+  it('offers names, not every capitalised German noun, as possible names', () => {
+    const info = analyseTranscript(ZOOM_DE)!;
+    const words = properNounCandidates(ZOOM_DE, info, []).map((s) => s.text);
+    expect(words).toContain('Kleinbrück');
+    for (const noun of ['Tochter', 'Kindergarten', 'Medikament', 'Behandlung', 'Praxis', 'Ärztin']) {
+      expect(words).not.toContain(noun);
+    }
+  });
+
+  it('treats umlaut spellings and long dropped-letter names as the speaker', () => {
+    expect(isSpeakerVariant('Koehler', 'Köhler')).toBe(true);
+    expect(isSpeakerVariant('Nirosha', 'Nirohshah')).toBe(true);
+    expect(isSpeakerVariant('Marion', 'Maria')).toBe(false);
+  });
+});
+
 describe('proper-noun safety net', () => {
   it('offers unusual names the model missed, once each, but not tools or calendar words', () => {
     const t = `Ana Ruiz: I discussed it with Oriol last week, and Oriol agreed.\nBen Cole: Did Toby use Zoom or PowerPoint in September?\nAna Ruiz: Only Excel, but Toby liked it.\nBen Cole: ok.\n`;
