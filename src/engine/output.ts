@@ -133,6 +133,13 @@ export function pdfSafe(text: string): string {
     .join('');
 }
 
+/** "sha256:3f7a91b2c4d0" — SHA-256 of the filename, first 12 hex digits. */
+export async function filenameFingerprint(filename: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(filename));
+  const hex = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+  return `sha256:${hex.slice(0, 12)}`;
+}
+
 export async function generateComplianceReportPdf(
   audit: AuditLog,
   nerLeakCount: number,
@@ -248,7 +255,9 @@ export async function generateComplianceReportPdf(
 
   // ── Processing metadata ────────────────────────────────────────────────
   section('1. Processing Metadata');
-  row('Record (filename hashed)', filename);
+  // Filenames often carry the patient's name ("Mueller_Anna_Entlassbrief"):
+  // the report shows a short fingerprint, which still matches the file.
+  row('Record (filename hashed)', await filenameFingerprint(filename));
   row('Input format', audit.inputFormat);
   row('Input size (bytes)', audit.inputSize.toLocaleString());
   row('Output size (bytes)', audit.outputSize.toLocaleString());

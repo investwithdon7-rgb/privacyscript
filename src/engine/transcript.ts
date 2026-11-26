@@ -918,7 +918,10 @@ const NOT_A_NAME = new Set(
     // interjections that speech-to-text capitalises
     'okay yeah yes mhm hmm vale bueno sí ja nee nein ' +
     // German greetings, fillers and adverbs that speech-to-text capitalises
-    'guten ähm äh wow hey och ach naja jedenfalls erstes habs dankeschön tschüss bitte danke genau super prima toll klar'
+    'guten ähm äh wow hey och ach naja jedenfalls erstes habs dankeschön tschüss bitte danke genau super prima toll klar ' +
+    // German formal "you" (always capitalised) and the commonest nouns of
+    // address and small talk, which follow adjectives or titles, not articles
+    'sie ihnen ihr ihre ihrer ihrem ihren frau herr herrn tag name mal jahr jahre zeit leute'
   ).split(/\s+/)
 );
 

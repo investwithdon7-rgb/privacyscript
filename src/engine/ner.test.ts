@@ -58,6 +58,11 @@ describe('aggregateEntities', () => {
 });
 
 describe('rawNerToSpans', () => {
+  it('drops roles used as forms of address ("Frau Kollegin")', () => {
+    const text = 'Sie hat mit Frau Kollegin gesprochen.';
+    expect(rawNerToSpans([raw('B-PER', 'Kollegin', 17, 25)], text, 0)).toHaveLength(0);
+  });
+
   it('drops stray fragments shorter than 3 characters', () => {
     const text = 'An update on N systems.';
     const tokens = [

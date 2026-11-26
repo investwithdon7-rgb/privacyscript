@@ -122,11 +122,18 @@ export function reidentifyText(text: string, key: OpenedKey): { text: string; re
   let replaced = 0;
   let out = text;
   for (const { code, original } of codes) {
-    const parts = out.split(code);
-    if (parts.length > 1) {
-      replaced += parts.length - 1;
-      out = parts.join(original);
-    }
+    if (!out.includes(code)) continue;
+    // A transcript speaker's original is the bracketed header ("[Helen
+    // Carter]"). Keep the brackets only where the label starts a line; a
+    // mention inside a sentence gets the plain name ("Frau Carter", not
+    // "Frau [Helen Carter]").
+    const bare = /^\[[^\]]+\]$/.test(original) ? original.slice(1, -1) : original;
+    const re = new RegExp(code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+    out = out.replace(re, (_m, at: number) => {
+      replaced++;
+      const lineStart = out.lastIndexOf('\n', at - 1) + 1;
+      return /^[ \t]*$/.test(out.slice(lineStart, at)) ? original : bare;
+    });
   }
   return { text: out, replaced };
 }

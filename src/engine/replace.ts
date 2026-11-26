@@ -163,9 +163,11 @@ export async function replaceSpans(
     if (t.start < cursor) {
       // Overlap — the merge step in detect.ts is supposed to prevent this,
       // but if a residual overlap slips through we keep the earlier
-      // replacement and skip this span. Still record it for the audit log.
+      // replacement and skip this span. Still record it for the audit log,
+      // but NOT in the key mapping: the text holds the earlier replacement,
+      // and overwriting the mapping (same original, other label) left a code
+      // in the output that the key could not reverse.
       const replacement = cache.get(keyOf(t.span.label, t.original))!;
-      mapping[t.original] = replacement;
       replacements.push({ span: t.span, original: t.original, replacement });
       continue;
     }
@@ -547,7 +549,9 @@ function anonymise(label: IdentifierLabel, token: string, dateFormatHint: DateFo
     case 'DATE': {
       const parsed = parseLooseDate(token, dateFormatHint);
       if (parsed) return String(parsed.date.getUTCFullYear());
-      return '[DATE]';
+      // "Juni 2020", "octubre de 2016": keep the year, as for full dates.
+      const year = /(?<!\d)(?:19|20)\d{2}(?!\d)/.exec(token);
+      return year ? year[0] : '[DATE]';
     }
     case 'AGE_OVER_89':
       return '90+';
