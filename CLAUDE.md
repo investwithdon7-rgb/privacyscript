@@ -243,6 +243,17 @@ Each row is a person, so risk is measured across rows, not per record.
   separately — never inside the ZIP.
 - Surveys, PDFs, DICOM and photos are skipped with a reason (they need their own review).
 
+### Rule benchmark (public synthetic datasets) — `scripts/benchmark.mjs`
+
+- Scores the rule engine (no name model) against five labelled, synthetic, openly
+  licensed corpora (German letters, MEDDOCAN, two Dutch sets, a 5-language set) kept in
+  git-ignored `benchmark-data/`; download steps are in the script header. Never shipped.
+- Reports hidden / partly hidden / missed per label, plus text hidden that is no
+  identifier and clinical content hidden by mistake. Years alone and ages ≤ 89 are
+  not counted as misses (Safe Harbor policy).
+- Tune on the default split; `--split test` (1 in 5 documents, MEDDOCAN's own test set)
+  is for final scores only. MDeID is not used (CC BY-NC).
+
 ### Scanned PDF optimisation strategy
 
 Tesseract.js is the bottleneck. To make it usable, the v1 pipeline uses these techniques:

@@ -146,7 +146,7 @@ const NOT_A_SPEAKER = new Set([
 
 /** "Hm: okay, …" — a filler the captioner wrote before a colon, not a speaker. */
 const FILLER_LABEL_RE =
-  /^(?:h+m+|m+h+m+|mm+|uh+m*|um+|ah+|äh+m*|öh+m*|eh+m*|oh+|ok(?:ay)?|ja|nee|nein|yes|yeah|no|so|also|genau|gut|vale|bueno|pues|oui|non|si|sí)$/i;
+  /^(?:h+m+|m+h+m+|mm+|uh+m*|um+|ah+|äh+m*|öh+m*|eh+m*|oh+|ok(?:ay)?|ja|ne|nee|nein|yes|yeah|no|so|also|genau|gut|vale|bueno|pues|oui|non|si|sí)$/i;
 
 const GENERIC_SPEAKER_RE =
   /^(?:interviewer|moderator|facilitator|researcher|respondent|participant|interviewee|speaker|unknown(?: speaker)?|int|iv|ie|mod|fac|res|resp|r|i|p|q|a|pt|fg\d*)(?:[ \t]*#?\d{1,3}[a-z]?)?$|^[A-Z]{1,3}\d{1,3}$/i;
@@ -192,7 +192,9 @@ export function analyseTranscript(text: string): TranscriptInfo | null {
     const inner = /^[\[(]\s*([^\])]+?)\s*[\])]$/.exec(trimmed);
     const core = inner ? inner[1] : trimmed;
     const label = core.replace(/\s+/g, ' ');
-    if (!label || NOT_A_SPEAKER.has(label.toLowerCase()) || FILLER_LABEL_RE.test(label)) return;
+    // "Ja. Ne:" — several fillers before a colon are still not a speaker.
+    const fillerOnly = label.split(/[\s.,!?…]+/).filter(Boolean).every((w) => FILLER_LABEL_RE.test(w));
+    if (!label || NOT_A_SPEAKER.has(label.toLowerCase()) || fillerOnly) return;
     const offset = raw.indexOf(core);
     labelSpans.push({ start: start + offset, end: start + offset + core.length, speaker: label });
   };
@@ -388,9 +390,11 @@ export function nameParts(label: string): string[] {
     .split(/\s+/)
     .map((w) => w.replace(/[.,'’]+$/g, ''))
     .filter((w) => w.length >= 3 && !TITLES.has(w.toLowerCase()));
-  // Double-barrelled surnames are spoken one half at a time ("Frau Trialonis").
+  // Double-barrelled surnames are spoken one half at a time ("Frau Westphal").
   const halves = words.flatMap((w) => (w.includes('-') ? w.split('-') : [])).filter((w) => w.length >= 3);
-  return Array.from(new Set([label, ...words, ...halves]));
+  // …or run together by speech-to-text ("Westfalbrandauer").
+  const joined = words.filter((w) => w.includes('-')).map((w) => w.replace(/-/g, ''));
+  return Array.from(new Set([label, ...words, ...halves, ...joined]));
 }
 
 function escapeRegExp(s: string): string {
@@ -491,16 +495,31 @@ export function speakerSpans(text: string, info: TranscriptInfo): Span[] {
  */
 export function isSpeakerVariant(word: string, name: string): boolean {
   if (word.toLowerCase() === name.toLowerCase()) return false;
-  // "Schroedter" / "Schröter" / "Schroter": compare umlauts spelled out.
+  // "Koehler" / "Köhler" / "Kohler": compare umlauts spelled out.
   const a = foldUmlauts(word);
   const b = foldUmlauts(name);
   if (a === b) return true;
   if (b.length < 5) return false;
-  // Long names lose a letter or two in speech-to-text ("Nirosha" for
-  // "Nirohshah"); short ones must stay within one letter of length.
+  // Same sound, different spelling: "Karoscha" / "Karohshah",
+  // "Westfalbrandauer" / "WestphalBrandauer".
+  const ka = soundKey(a);
+  const kb = soundKey(b);
+  if (ka.length >= 5 && a.slice(0, 2) === b.slice(0, 2) && (ka === kb || (kb.length >= 10 && editDistance(ka, kb) <= 1))) return true;
+  // Long names lose a letter or two in speech-to-text ("Karosha" for
+  // "Karohshah"); short ones must stay within one letter of length.
   const maxLengthGap = b.length >= 8 ? 2 : 1;
   if (a.slice(0, 2) !== b.slice(0, 2) || Math.abs(a.length - b.length) > maxLengthGap) return false;
   return editDistance(a, b) <= (b.length >= 6 ? 2 : 1);
+}
+
+/** Rough spoken form: sch/sh, ph/f, th/t, ck/k, silent h, doubled letters. */
+function soundKey(s: string): string {
+  return s
+    .replace(/sch/g, 'sh')
+    .replace(/ph/g, 'f')
+    .replace(/ck/g, 'k')
+    .replace(/(?!^)h/g, '')
+    .replace(/(.)\1+/g, '$1');
 }
 
 function foldUmlauts(s: string): string {
@@ -897,7 +916,9 @@ const NOT_A_NAME = new Set(
     'excel powerpoint word outlook onedrive sharepoint chrome safari firefox azure amazon aws ' +
     'chatgpt openai gemini copilot claude anthropic slack notion clickup jira trello dropbox ' +
     // interjections that speech-to-text capitalises
-    'okay yeah yes mhm hmm vale bueno sí ja nee nein'
+    'okay yeah yes mhm hmm vale bueno sí ja nee nein ' +
+    // German greetings, fillers and adverbs that speech-to-text capitalises
+    'guten ähm äh wow hey och ach naja jedenfalls erstes habs dankeschön tschüss bitte danke genau super prima toll klar'
   ).split(/\s+/)
 );
 
