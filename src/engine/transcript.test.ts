@@ -366,6 +366,12 @@ describe('Zoom "[Name] 12:19:14" transcripts in German', () => {
     }
   });
 
+  it('does not offer the formal "Sie" or common nouns after adjectives as names', () => {
+    const t = `[Lena Westphal] 10:00:01\nHallo, Guten Tag! Frau Köhler, hören Sie mich?\n\n[Henrik Köhler] 10:00:05\nJa.\n\n[Lena Westphal] 10:00:09\nIch bin die Lena, ganz langer Name, aber Sie können mich Lenchen nennen.\n\n[Henrik Köhler] 10:00:15\nGut, danke.\n`;
+    const words = properNounCandidates(t, analyseTranscript(t)!, []).map((s) => s.text);
+    for (const w of ['Sie', 'Tag', 'Name', 'Frau']) expect(words).not.toContain(w);
+  });
+
   it('treats umlaut spellings and long dropped-letter names as the speaker', () => {
     expect(isSpeakerVariant('Koehler', 'Köhler')).toBe(true);
     expect(isSpeakerVariant('Karosha', 'Karohshah')).toBe(true);

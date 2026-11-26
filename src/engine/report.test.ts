@@ -25,3 +25,23 @@ describe('compliance / DPIA report', () => {
     expect(Buffer.from(bytes).toString('latin1')).toContain('%PDF');
   });
 });
+
+describe('compliance report filename', () => {
+  it('shows a fingerprint, never the filename (it often carries the patient name)', async () => {
+    const { filenameFingerprint } = await import('@/engine/output');
+    const name = 'Mueller_Anna_Entlassbrief';
+    const fp = await filenameFingerprint(name);
+    expect(fp).toMatch(/^sha256:[0-9a-f]{12}$/);
+    expect(await filenameFingerprint(name)).toBe(fp);
+    // The PDF's text is compressed: read it back the way a viewer would.
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const bytes = await generateComplianceReportPdf(audit([], 2), 0, name);
+    const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes) }).promise;
+    let text = '';
+    for (let i = 1; i <= doc.numPages; i++) {
+      text += (await (await doc.getPage(i)).getTextContent()).items.map((it) => ('str' in it ? it.str : '')).join(' ');
+    }
+    expect(text).toContain(fp);
+    expect(text).not.toContain('Mueller');
+  });
+});

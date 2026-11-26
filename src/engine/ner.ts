@@ -395,6 +395,10 @@ const NER_DOCUMENT_WORDS = new Set([
   'sagittal', 'transverse', 'axial', 'coronal', 'doppler', 'left', 'right', 'bilateral',
   // "Patient" and record headings in German, French, Spanish, Italian, Dutch, Portuguese.
   'patientin', 'patiente', 'paciente', 'paziente', 'patiënt', 'patiënte', 'doente', 'utente',
+  // Roles used as forms of address ("Frau Kollegin", "Herr Doktor"): the
+  // model tags them as names after a title.
+  'kollege', 'kollegin', 'kollegen', 'doktor', 'arzt', 'ärztin', 'oberarzt', 'oberärztin', 'chefarzt', 'chefärztin',
+  'collega', 'colega', 'collègue', 'confrère', 'consœur', 'docteur', 'collega’s',
   'entlassbrief', 'arztbrief', 'befund', 'diagnose', 'anamnese', 'diagnóstico', 'diagnostic', 'diagnosi',
   'informe', 'rapport', 'relazione', 'verslag', 'relatório', 'urgencias', 'notaufnahme', 'urgences',
   'station', 'planta', 'reparto', 'afdeling', 'serviço', 'servicio', 'service',

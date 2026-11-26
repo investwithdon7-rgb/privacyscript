@@ -952,6 +952,7 @@ export async function finalise(): Promise<void> {
       complianceProfile: s.complianceProfile ?? 'GDPR_PSEUDO',
       notes: [
         ...tabularNotes,
+        ...possibleNameNotes(s),
         ...(validation.passed
           ? []
           : [`${validation.leaks.length} potential leak(s) detected — review before sharing.`]),
@@ -967,6 +968,18 @@ export async function finalise(): Promise<void> {
   } catch (err) {
     updateSession({ error: (err as Error).message });
   }
+}
+
+/**
+ * The user's decisions on possible names, as counts only (the words are
+ * personal data and never go into the audit log).
+ */
+function possibleNameNotes(s: ReturnType<typeof getSession>): string[] {
+  const offered = s.detection?.uncertainSpans ?? [];
+  if (offered.length === 0) return [];
+  const key = (sp: { start: number; end: number; label: string }) => `${sp.start}:${sp.end}:${sp.label}`;
+  const redacted = offered.filter((sp) => s.uncertainSpanDecisions[key(sp)] === true).length;
+  return [`Possible names offered for review: ${offered.length}; user redacted ${redacted}, kept ${offered.length - redacted}.`];
 }
 
 /**

@@ -115,3 +115,27 @@ describe('replaceSpans — verbatim residual sweep', () => {
     expect(result.residualSweeps).toBe(0);
   });
 });
+
+describe('replaceSpans — key matches the output', () => {
+  it('maps the code actually written when two detections cover the same text', async () => {
+    const text = 'Sie wohnt in 31134 Kleinbrück.';
+    const start = text.indexOf('31134');
+    const end = start + '31134 Kleinbrück'.length;
+    const span = (label: Span['label'], source: Span['source']): Span => ({
+      start, end, text: text.slice(start, end), label, category: 'EU', source, confidence: 1,
+    });
+    // A rule postcode and a possible name the user confirmed, same range.
+    const res = await replaceSpans(text, [span('POSTCODE_EU', 'rule'), span('ADDRESS_LINE', 'ner')], [], {
+      mode: 'PSEUDONYMISE',
+      secret: await generateSessionSecret(),
+      quasiToRedact: new Set(),
+      labeller: (label) => (label === 'ADDRESS_LINE' ? '[Address 1]' : null),
+    });
+    const code = res.mapping['31134 Kleinbrück'];
+    expect(res.text).toContain(code);
+    // Every code in the output can be looked up in the key.
+    for (const written of res.text.match(/\[[^\]]+\]/g) ?? []) {
+      expect(Object.values(res.mapping)).toContain(written);
+    }
+  });
+});

@@ -136,6 +136,18 @@ describe('EU language records (rules only)', () => {
     });
   }
 
+  it('keeps the year of a month-and-year date when anonymising', async () => {
+    for (const [text, out] of [
+      ['Erstdiagnose im Juni 2020.', 'Erstdiagnose im 2020.'],
+      ['Diagnosticado en octubre de 2016.', 'Diagnosticado en 2016.'],
+      ['Rezidiv 03/2019.', 'Rezidiv 2019.'],
+    ] as const) {
+      const det = detect(text, []);
+      const res = await replaceSpans(text, det.spans, det.quasiSpans, { mode: 'ANONYMISE', quasiToRedact: new Set() });
+      expect(res.text, text).toBe(out);
+    }
+  });
+
   it('shifts month-name dates in their own language and style', async () => {
     const secret = await generateSessionSecret();
     for (const [text, re] of [

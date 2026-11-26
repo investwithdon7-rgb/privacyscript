@@ -55,3 +55,17 @@ describe('key file', () => {
     expect(reidentifyText('Seen 2023-07-28.', key).text).toBe('Seen 2023-07-28.');
   });
 });
+
+describe('restoring transcript speakers', () => {
+  it('keeps brackets on header lines only, plain names inside sentences', () => {
+    const key = {
+      codes: [{ code: '[Participant 1]', original: '[Henrike Köhler]', alsoWrittenAs: ['Köhler'] }],
+      dateShiftDays: null,
+      createdAt: '',
+    };
+    const text = '[Participant 1] 10:00:05\nJa.\n\n  [Participant 1] 10:00:09\nVielen Dank, Frau [Participant 1].';
+    const out = reidentifyText(text, key);
+    expect(out.replaced).toBe(3);
+    expect(out.text).toBe('[Henrike Köhler] 10:00:05\nJa.\n\n  [Henrike Köhler] 10:00:09\nVielen Dank, Frau Henrike Köhler.');
+  });
+});
