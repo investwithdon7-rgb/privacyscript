@@ -109,6 +109,22 @@ const EU_DATE_PATTERN = new RegExp(
   'giu'
 );
 
+// "24 November", "5 apr", "vrijdag 30 mei", "le 3 mars": a day and month
+// with no year is still a date element (HIPAA keeps only the year). English
+// month names are included; "may" (English modal verb) needs a capital.
+const DAY_MONTH_WORDS = [
+  ...Array.from(MONTH_WORDS.keys()).filter((w) => w !== 'may'),
+  ...'january february march april june july august september october november december jan feb mar apr jun jul aug sept sep oct nov dec'.split(' '),
+]
+  .filter((w, i, all) => all.indexOf(w) === i)
+  .sort((a, b) => b.length - a.length)
+  .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  .join('|');
+const EU_DAY_MONTH_PATTERN = new RegExp(
+  String.raw`(?<![\p{L}\d.,/:-])\d{1,2}(?:\.|º|°|er|ª)?\s+(?:de\s+)?(?:${DAY_MONTH_WORDS}|may)\.?(?![\p{L}\d])(?!\s*,?\s*\d)`,
+  'giu'
+);
+
 /* ----------------------------------------------------------------------------
  * Names: titles, field labels, family words
  * --------------------------------------------------------------------------*/
@@ -117,7 +133,10 @@ const NAME_WORD = String.raw`(?:(?:van|von|der|den|de|del|della|di|da|dos|das|du
 
 // Titles, case-sensitive: "Sra. García", "Herr Müller", "Mevr. de Vries".
 const EU_HONORIFIC_PATTERN = new RegExp(
-  String.raw`(?<![\p{L}])(?:Sr\.?|Sra\.?|Srta\.?|Dra\.?|Dña\.?|Doña|Don|Herr|Frau|Hr\.|Fr\.|Dr\.\s?med\.|Prof\.\s?Dr\.|Dhr\.?|Mevr\.?|Mw\.|Mme\.?|Mlle\.?|M\.|Pr\.?|Sig\.(?:ra)?|Sig\.na|Dott\.(?:ssa)?|Prof\.(?:ssa)?|Enf\.?|Enfª)[ \t]+(${NAME_WORD}(?:[ \t]+${NAME_WORD}){0,3})`,
+  String.raw`(?<![\p{L}])(?:Sr\.?|Sra\.?|Srta\.?|Dra\.?|Dña\.?|Doña|Don|Herr|Frau|Hr\.|Fr\.|Dr\.\s?med\.|Prof\.\s?Dr\.|Dhr\.?|Mevr\.?|Mw\.|Mme\.?|Mlle\.?|M\.|Pr\.?|Sig\.(?:ra)?|Sig\.na|Dott\.(?:ssa)?|Prof\.(?:ssa)?|Enf\.?|Enfª)[ \t]+` +
+    // "Sehr geehrte Frau Kollegin", "Herr Doktor": a role, not a name.
+    String.raw`(?!(?:Kolleg(?:e|in|en|innen)|Doktor(?:in)?|Professor(?:in)?|Patient(?:in)?|Chef(?:arzt|ärztin)|Ober(?:arzt|ärztin)|Assistenz(?:arzt|ärztin)|Stations(?:arzt|ärztin)|Pfleger(?:in)?|Schwester|Collega|Colega|Collègue|Confrère|Consœur|Docteur|Doctor(?:a)?)(?![\p{L}]))` +
+    String.raw`(${NAME_WORD}(?:[ \t]+${NAME_WORD}){0,3})`,
   'gu'
 );
 
@@ -130,7 +149,10 @@ const EU_NAME_FIELD_PATTERN = new RegExp(
     String.raw`naam|voornaam|achternaam|voorletters|patiënt|patiëntnaam|` +
     String.raw`utente|nome\s+do\s+(?:utente|doente|paciente)|doente|` +
     String.raw`m[eé]dico|médecin|arzt|ärztin|medico|arts|huisarts|hausarzt|médico\s+de\s+família)` +
-    String.raw`[ \t]*:[ \t]*(?:(?:Dr\.?|Dra\.?|Prof\.?)[ \t]+)?(${NAME_WORD}(?:,?[ \t]+${NAME_WORD}){0,3})`,
+    String.raw`[ \t]*:[ \t]*(?:(?:Dr\.?|Dra\.?|Prof\.?)[ \t]+)?` +
+    // Dialogue lines ("Paciente: No, …", "Médico: Bueno") are not names.
+    String.raw`(?!(?:No|Sí|Si|Yes|Oui|Non|Nein|Ja|Nee|Neen|Ok|Okay|Vale|Bueno|Pues|Bien|Gut|Genau|Also|Me|Mi|Yo|El|La|Lo|Los|Las|Un|Una|En|De|Que|Le|Je|Il|Elle|Ich|Er|Sie|Es|Das|Die|Der|Ik|Het|De|Een|Wat|Hoe|Ja|I|It|The|We|My)(?![\p{L}]))` +
+    String.raw`(${NAME_WORD}(?:,?[ \t]+${NAME_WORD}){0,3})`,
   'giu'
 );
 
@@ -160,23 +182,139 @@ const EU_RELATION_PATTERN = new RegExp(
 
 const EU_MRN_PATTERN = new RegExp(
   String.raw`(?<![\p{L}])(?:NHC|n\.?[º°]?\s*(?:de\s+)?historia(?:\s+cl[ií]nica)?|historia\s+cl[ií]nica|n[uú]mero\s+de\s+historia|` +
-    String.raw`Fallnummer|Fall-?Nr\.?|Patientennummer|Patienten-?(?:ID|Nr\.?)|Aufnahmenummer|Aufnahme-?Nr\.?|` +
-    String.raw`num[eé]ro\s+de\s+dossier|n[°º]\s*(?:de\s+)?dossier|IPP|NIP|` +
+    String.raw`Fallnummer|Fall-?Nr\.?|Fall-?ID|Patientennummer|Patienten-?(?:ID|Nr\.?)|PID|Aufnahmenummer|Aufnahme-?Nr\.?|` +
+    String.raw`Aktenzeichen|Aktennummer|Patientenaktennummer|Patientenakte|Fallkennung|Auftragsnummer|Befundnummer|Eingangsnummer(?:\s+Pathologie)?|Probennummer|Labornummer|Labor-?Nr\.?|` +
+    String.raw`num[eé]ro\s+de\s+dossier(?:\s+patient)?|n[°º]\s*(?:de\s+)?dossier(?:\s+patient)?|dossier(?:\s+patient)?(?=\s*[:#])|` +
+    String.raw`identifiant\s+(?:du\s+)?patient|num[eé]ro\s+(?:de\s+)?patient|n[°º]\s*patient|IPP|NIP|` +
     String.raw`num(?:ero)?\.?\s+(?:di\s+)?cartella(?:\s+clinica)?|n\.\s*cartella|nosologico|` +
-    String.raw`pati[eë]ntnummer|pati[eë]ntnr\.?|ziekenhuisnummer|registratienummer|` +
+    String.raw`pati[eë]ntnummer|pati[eë]ntnr\.?|pati[eë]nt-?ID|dossiernummer|dossiernr\.?|EPD-?nummer|ziekenhuisnummer|registratienummer|` +
+    String.raw`n\.?[º°]?\s*(?:de\s+)?episodio|n[uú]mero\s+de\s+episodio|expediente|n\.?[º°]?\s*(?:de\s+)?expediente|id\s+(?:del\s+)?paciente|` +
+    String.raw`unit\s+record|(?:patient|hospital)\s+(?:reference|ref\.?|file\s+(?:no|number)|identifier)|` +
     String.raw`n[uú]mero\s+(?:de\s+)?processo|n\.?[º°]\s*(?:de\s+)?processo|n[uú]mero\s+(?:de\s+)?utente|n\.?[º°]\s*(?:de\s+)?utente)` +
-    String.raw`\s*[:.#\-]?\s*([A-Z0-9][A-Z0-9\-\/]{3,19})`,
+    // Keyword ends the word; value holds a digit (the flag is case-insensitive).
+    String.raw`(?![\p{L}])\s*[:.#\-]?\s*(?=[A-Z\-\/]*\d)([A-Z0-9][A-Z0-9\-\/]{3,19})`,
   'giu'
 );
+
+// Clinicians' registration numbers: "LANR: 579791332", "N.º de colegiada:
+// 15/97/60251", "RPPS : 10559160295", "RIZIV 1-24658-92-290", "BIG-nummer".
+// Case-sensitive: "big", "npi" and "agb" are ordinary words in some languages.
+const CLINICIAN_REG_PATTERN = new RegExp(
+  String.raw`(?<![\p{L}])(?:LANR|BSNR|RPPS|ADELI|RIZIV(?:-?(?:nummer|nr\.?))?|INAMI|BIG(?:-?(?:nummer|nr\.?|registratie))?|AGB(?:-?code)?|` +
+    String.raw`[Nn]\.?\s?[º°]\s*(?:de\s+)?[Cc]olegiad[oa]|[Nn][uú]mero\s+de\s+[Cc]olegiad[oa]|[Cc]olegiad[oa]|COLEGIAD[OA]|[Cc]ol\.)` +
+    String.raw`(?![\p{L}])\s*(?:[Nn][º°r.]+\s*)?[:.#\-]?\s*(?=[A-Z\-\/.]*\d)([A-Z0-9][A-Z0-9\-\/.]{3,19}\d)`,
+  'gu'
+);
+// Belgian RIZIV/INAMI shape on its own: 1-23456-78-901.
+const BE_RIZIV_PATTERN = /(?<![\d\-\/])\d[-\/]\d{5}[-\/]\d{2}[-\/]\d{3}(?![\d\-\/])/g;
+// Belgian VAT (a practice's number identifies a sole practitioner).
+const BE_VAT_PATTERN = /(?<![\p{L}\d])BE[ \t]?(?:[01]\d{3}|\d{3})[. ]?\d{3}[. ]?\d{3}(?!\d)/gu;
+
+// IBAN written in groups of four ("NL91 ABNA 0417 1643 00"); the plain IBAN
+// rule only matches it unbroken. Mod-97 checked.
+const IBAN_SPACED_PATTERN = /(?<![A-Z0-9])[A-Z]{2}\d{2}(?: [A-Z0-9]{4}){2,7}(?: [A-Z0-9]{1,3})?(?![A-Z0-9])/g;
+export function validIban(s: string): boolean {
+  const v = s.replace(/\s+/g, '').toUpperCase();
+  if (v.length < 15 || v.length > 34) return false;
+  const moved = v.slice(4) + v.slice(0, 4);
+  let rem = 0;
+  for (const ch of moved) {
+    const n = ch >= 'A' ? String(ch.charCodeAt(0) - 55) : ch;
+    for (const d of n) rem = (rem * 10 + +d) % 97;
+  }
+  return rem === 1;
+}
+
+// German landline/fax with area code and extension: "038372/5704-2",
+// "(035201) 8644-4", "02421 / 2531 17", "030/8743-228".
+const DE_PHONE_PATTERN =
+  /(?<![\d\w.,\/])(?:\+49[ \t]?\(0\)[ \t]?\d{2,5}|\(0\d{2,5}\)|0\d{2,5})[ \t]?(?:\/[ \t]?|-[ \t]?|\.)?\d{2,8}(?:[ \t]?-[ \t]?\d{1,5}|[ \t]\d{2,5}|\.\d{1,5}){0,2}(?![\d\w\/.,]\d)/g;
+const phoneDigits = (s: string) => {
+  const n = s.replace(/\D/g, '').length;
+  return n >= 7 && n <= 15;
+};
+
+// Postcode + town where the postcode is 4 digits (BE, AT, CH, DK, LU):
+// "8540 Deerlijk", "B-3000 Leuven". Four digits alone are often a year, so
+// a comma, line start or "B-" must come before, and the town must end the
+// line or be followed by a comma or bracket.
+const POSTCODE4_TOWN_PATTERN =
+  /(?:(?<=,[ \t]?)|(?<=^[ \t]*)|(?<=\b(?:B|BE|A|AT|CH|L|LU|DK)-))[1-9]\d{3}[ \t]+\p{Lu}[\p{L}'\-]+(?:[ \t\-](?:sur|sous|lez|lès|en|aan|de|la|le|am|an|\(?\p{Lu}[\p{L}'\-]+\)?)){0,3}(?=[ \t]*(?:$|[,;)\n]))/gmu;
+
+// US "City, ST 12345": the city right before a state and ZIP.
+const US_CITY_PATTERN =
+  /(?<![\p{L}])\p{Lu}[\p{L}.'\-]+(?:[ \t]\p{Lu}[\p{L}.'\-]+){0,2}(?=,[ \t]*(?:A[KLRZ]|C[AOT]|D[CE]|FL|GA|HI|I[ADLN]|K[SY]|LA|M[ADEINOST]|N[CDEHJMVY]|O[HKR]|PA|RI|S[CD]|T[NX]|UT|V[AT]|W[AIVY])[ \t]+\d{5}(?:-\d{4})?\b)/gu;
+
+// Month and year with no day: "Juni 2020", "octubre de 2016", "March 2019",
+// "03/2019". The month is a date element; only the year may stay.
+const MONTH_YEAR_PATTERN = new RegExp(
+  String.raw`(?<![\p{L}\d.\/])(?:(?:${DAY_MONTH_WORDS})\.?\s+(?:de\s+|del\s+)?(?:19|20)\d{2}|(?:0[1-9]|1[0-2])\/(?:19|20)\d{2})(?![\p{L}\d\/])`,
+  'giu'
+);
+
+// Ward, room and bed codes next to admission details: "Station: G7",
+// "Zimmer 72", "Zi: 301", "kamer 214", "chambre 12", "habitación 305".
+const WARD_ROOM_PATTERN =
+  /(?<![\p{L}])(?:Station|Zimmer|Zi\.?|Bett|[Kk]amer|[Cc]hambre|[Hh]abitaci[oó]n|[Rr]oom|[Bb]ed|[Ww]ard)(?![\p{L}])[ \t]*[:.]?[ \t]*(?=[A-Z\-]*\d)([A-Z]{0,5}-?\d{1,4}[A-Z]?(?:[ \t](?:Ost|West|Nord|Süd|Mitte))?)(?![\p{L}\d])/gu;
+
+// Dictation initials under a letter's signature: "ek/pf", "Kürzel: bo/ek".
+// Alone on a line, unless labelled; lab units ("mg/dl") are excluded.
+const DICTATION_INITIALS_PATTERN =
+  /(?:^[ \t]*|(?<=K[üu]rzel:?[ \t]*|Diktat:?[ \t]*))(?!(?:mg|ml|dl|ug|µg|ng|pg|mm|cm|kg|g|l|h|d|u|iu|ie|min|s)\/)([A-Za-z]{2,3}\/[A-Za-z]{2,3})(?![\p{L}\/])(?=[ \t]*$)/gmu;
+
+// Device identifiers with an obvious shape (HIPAA #13).
+const MAC_PATTERN = /(?<![0-9A-F:])(?:[0-9A-F]{2}[:\-]){5}[0-9A-F]{2}(?![0-9A-F:])/gi;
+const IMEI_PATTERN = /(?<![\p{L}])IMEI(?:-?(?:nummer|nr\.?|number))?(?![\p{L}])\s*[:.#\-]?\s*(\d{15}|\d{2}[- ]\d{6}[- ]\d{6}[- ]\d)(?!\d)/giu;
+// Card security code, only when labelled.
+const CVV_PATTERN = /(?<![\p{L}])(?:CVV2?|CVC2?|CID|beveiligingscode|veiligheidscode|security\s+code|Prüfnummer|cryptogramme|code\s+de\s+s[ée]curit[ée])(?:-?code)?(?![\p{L}])\s*[:.#\-]?\s*(\d{3,4})(?!\d)/giu;
+// Licence plates, only when labelled (NL sidecodes, DE, FR SIV, ES, BE).
+const PLATE_PATTERN =
+  /(?<![\p{L}])(?:[Kk]enteken|[Nn]ummerplaat|Kennzeichen|Kfz-Kennzeichen|[Pp]laque(?:\s+d'immatriculation)?|[Ii]mmatriculation|[Mm]atr[ií]cula|[Tt]arga|[Ll]icen[cs]e\s+plate|[Rr]egistration\s+plate)(?![\p{L}])\s*[:.#\-]?\s*(?=[A-Z\- ]*\d)([A-Z0-9]{1,4}(?:[- ][A-Z0-9]{1,6}){1,3})(?![A-Z0-9])/gu;
+// GPS coordinates "52.3667, 4.8945" / "52.3667° N, 4.8945° E".
+const GPS_PATTERN =
+  /(?<![\d.])-?\d{1,2}\.\d{3,7}°?(?:[ \t]?[NS])?,[ \t]?-?\d{1,3}\.\d{3,7}°?(?:[ \t]?[EOW])?(?!\d)(?!\.\d)/g;
+
+// Payment card numbers: 13–19 digits, optionally in groups, Luhn checked.
+const CARD_PATTERN = /(?<![\d\-])(?:\d{4}[ \-]?){3}\d{1,7}(?![\d\-])/g;
+export function validLuhn(s: string): boolean {
+  const d = s.replace(/\D/g, '');
+  if (d.length < 13 || d.length > 19 || /^(\d)\1+$/.test(d.slice(1))) return false;
+  let sum = 0;
+  for (let i = 0; i < d.length; i++) {
+    let v = +d[d.length - 1 - i];
+    if (i % 2 === 1) v = v * 2 > 9 ? v * 2 - 9 : v * 2;
+    sum += v;
+  }
+  return sum % 10 === 0;
+}
+
+// Bare web domains of hospitals and practices: "helios-hanseklinikum-str.de".
+const BARE_DOMAIN_PATTERN =
+  /(?<![\p{L}\d@.\-\/])[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?(?:\.[a-z0-9\-]{2,63})*\.(?:de|at|ch|nl|be|fr|es|it|pt|lu|eu|com|org|net|info|health|co\.uk|org\.uk|nhs\.uk|ac\.uk)(?:\/[^\s<>"]*)?(?![\p{L}\d\-])/gu;
+// A domain needs a hyphen, a digit or two dots to be told apart from words
+// that happen to end in ".de" or ".it" after a full stop.
+const domainLooksReal = (s: string) => /[-\d]/.test(s.split('/')[0]) || (s.split('/')[0].match(/\./g) ?? []).length >= 2 || s.split('.')[0].length >= 6;
+
+// Spanish phone numbers: nine digits starting 6–9, optional +34.
+const ES_PHONE_PATTERN = /(?<![\d\-\/.])(?:\+?34[ \t\-]{0,2})?[6-9]\d{2}[ \t.]?\d{3}[ \t.]?\d{3}(?![\d\-\/])/g;
+
+// Dutch postcode on its own: "3512 KL", "3011BH" (letters SA, SD, SS are
+// never issued; IE, KG, MG, ML… are units, as in "1000 IE").
+const NL_POSTCODE_PATTERN =
+  /(?<![\p{L}\d])[1-9]\d{3}[ ]?(?!SA|SD|SS|IE|KG|MG|ML|MM|CM|KM|GR|IU|UI|ME|EH|HZ|KB|MB|GB)[A-Z]{2}(?![\p{L}\d])/gu;
+
+// Codes such as "LAB-460507", "DR-126782", "VRN-737768", "LOT-88257":
+// letters, a hyphen, five or more digits. Standards ("ISO-27001") excluded.
+const PREFIXED_CODE_PATTERN = /(?<![\p{L}\d\-])(?!(?:ISO|IEC|DIN|EN|NEN|ASTM|BS|NF|UNE|ICD|DSM)-)[A-Z]{2,5}-\d{5,10}(?:-[A-Z0-9]{1,6})?(?![\p{L}\d])/gu;
 
 const EU_INSURANCE_PATTERN = new RegExp(
   String.raw`(?<![\p{L}])(?:Krankenversichertennummer|KVNR|Versichertennummer|Versicherten-?Nr\.?|Versicherungsnummer|` +
     String.raw`tarjeta\s+sanitaria(?:\s+individual)?|CIP(?:-SNS)?|TSI|NUSS|n[º°]?\s*(?:de\s+)?afiliaci[oó]n|` +
     String.raw`num[eé]ro\s+de\s+s[eé]curit[eé]\s+sociale|carte\s+vitale|NIR|` +
     String.raw`tessera\s+sanitaria|codice\s+sanitario|n\.\s*tessera|` +
-    String.raw`polisnummer|verzekerdennummer|zorgverzekeringsnummer|` +
+    String.raw`polisnummer|verzekerdennummer|zorgverzekeringsnummer|zorgpolis(?:nummer)?|` +
     String.raw`n[uú]mero\s+(?:de\s+)?benefici[aá]rio|n[uú]mero\s+(?:de\s+)?seguran[cç]a\s+social|NISS|NSS|SVNR|SV-?Nummer|Sozialversicherungsnummer)` +
-    // The keyword must end the word ("NIR", not "Nirosha" or "nirgends") and
+    // The keyword must end the word ("NIR", not "Nirina" or "nirgends") and
     // the value must hold a digit: the flag is case-insensitive, so a
     // letters-only capture would be whatever word comes next.
     String.raw`(?![\p{L}])\s*[:.#\-]?\s*(?=[A-Z\-\/]*\d)([A-Z0-9][A-Z0-9\-\/]{3,19}(?:[ \t]\d{2,6}){0,4})`,
@@ -317,6 +455,19 @@ const EU_POSTCODE_TOWN_PATTERN = /(?<![\d\-])(?:\d{5}|\d{4}\s?[A-Z]{2}|\d{4}-\d{
 // French-style pairs "06 12 34 56 78", "+33 6 12 34 56 78"; "+49 (0)30 1234567".
 const EU_PHONE_PATTERN = /(?<![\d+])(?:(?:\+33|0033)\s?[1-9]|0[1-9])(?:[\s.\-]?\d{2}){4}(?!\d)|(?<![\d+])\+(?:3\d|4\d|35\d|42\d)\s?(?:\(0\)\s?)?\d{1,4}(?:[\s.\-\/]?\d{2,4}){2,4}(?!\d)/g;
 
+// Endings of one-word street names (German, Dutch, Flemish), either case
+// after a hyphen: "Hauptstraße", "Kerkstraat", "Jannedreef", "Lodehof".
+const STREET_SUFFIXES = [
+  'straße', 'strasse', 'str\\.', 'weg', 'gasse', 'platz', 'allee', 'ring', 'damm', 'ufer', 'steig', 'pfad', 'chaussee', 'markt',
+  'laan', 'straat', 'plein', 'gracht', 'kade', 'dijk', 'singel', 'steeg', 'dreef', 'hof', 'pad', 'baan', 'lei', 'kaai', 'dok', 'wal', 'steenweg', 'square', 'boulevard',
+]
+  .flatMap((s) => [`[${s[0]}${s[0].toUpperCase()}]${s.slice(1)}`, s.toUpperCase().replace('STR\\.', 'STR\\.')])
+  .join('|');
+// House number, with ranges and letters: "3-6", "90/96", "104a", "12 bus 3".
+const HOUSE_NO = String.raw`\d{1,4}[a-zA-Z]?(?:[\/\-]\d{1,4}[a-zA-Z]?)?(?:\s?bus\s?\d{1,4})?`;
+// Spanish floor/door after the house number: ", 2º dcha", ", 11A", ", 3 C", ", 2, B".
+const ES_FLOOR_TAIL = String.raw`(?:,?\s?\d{1,2}\s?[º°ª]?(?:\s?(?:[A-H]|dcha\.?|izda\.?|izq\.?|pta\.?\s?\d{1,2}))?(?![\p{L}\d])){0,2}(?:,\s?[A-H](?![\p{L}\d]))?`;
+
 // Street addresses: "Calle Mayor 12", "C/ Alcalá 45", "rue de la Paix",
 // "Via Roma 10", "Rua Augusta 100", "Hauptstraße 5", "Kerkstraat 1".
 const EU_ADDRESS_PATTERN = new RegExp(
@@ -327,10 +478,39 @@ const EU_ADDRESS_PATTERN = new RegExp(
     String.raw`(?<=\d{1,4}(?:\s?(?:bis|ter))?,?\s)(?:rue|avenue|av\.|boulevard|bd|place|chemin|impasse|allée|quai)|` +
     String.raw`Via|Viale|Piazza|Corso|Vicolo|Largo|` +
     String.raw`Rua|Travessa|Praça|Largo|Estrada)\s+(?:(?:de|del|de\s+la|de\s+los|des|du|de\s+l'|della|dei|delle|da|do|dos|das)\s+)?` +
-    String.raw`\p{Lu}[\p{L}'\-]+(?:\s+\p{Lu}[\p{L}'\-]+){0,3}(?:,?\s*(?:n\.?[º°]?\s*)?\d{1,4}[a-zA-Z]?(?!\d))?` +
-    String.raw`|\p{Lu}[\p{L}\-]*(?:straße|strasse|str\.|weg|gasse|platz|allee|ring|damm|ufer|laan|straat|plein|gracht|kade|dijk|singel|steeg)\s+\d{1,4}[a-zA-Z]?)`,
+    String.raw`\p{Lu}[\p{L}'\-]+(?:\s+\p{Lu}[\p{L}'\-]+){0,3}(?:,?\s*(?:n\.?[º°]?\s*)?\d{1,4}[a-zA-Z]?(?!\d)${ES_FLOOR_TAIL})?` +
+    // Compound street names, including hyphenated ones written with a
+    // capital after the hyphen ("Kevin-Heidrich-Allee 134").
+    String.raw`|\p{Lu}[\p{L}\-]*(?:${STREET_SUFFIXES})\s+${HOUSE_NO}(?![\p{L}\d]))`,
   'gu'
 );
+
+// Any street right before ", postcode Town" ("Mergel 135, 9840 De Pinte",
+// "Avenue de l'Yser 76, 5024 Gelbressée"): the postcode and town that follow
+// make it an address line whatever the street is called.
+const STREET_BEFORE_POSTCODE_PATTERN = new RegExp(
+  String.raw`(?<![\p{L}\d])\p{Lu}[\p{L}'’.\-]*(?:\s+[\p{L}'’.\-]+){0,5}?\s+${HOUSE_NO}(?=,?\s*(?:[A-Z]{1,2}-)?\d{4,5}(?:\s?[A-Z]{2})?\s+\p{Lu})`,
+  'gu'
+);
+
+// Spanish address in any case with a house number and floor/door:
+// "calle monforte de lemos 129, 8C", "c/ del Abedul 5-7, 2º dcha".
+const ES_STREET_PATTERN = new RegExp(
+  String.raw`(?<![\p{L}])(?:` +
+    // Capitalised street types: any words, then a number.
+    String.raw`(?:Calle|C\/|Avenid[ao]|Avda\.|Av\.?|Plaza|Pza\.|Paseo|Pº|Carrer|Camino|Ronda|Carretera|Travesía|` +
+    // Not "Vía", "Acceso", "Cuesta", "Partida": they open clinical sentences
+    // ("Vía oral 2 comprimidos", "Acceso venoso 2").
+    String.raw`Pasaje|Urbanización|Callejón|Glorieta|Rambla|Bulevar|Polígono|Barrio|Plazuela)` +
+    String.raw`\s+(?:[\p{L}'´.\-]+\s+){0,5}?[\p{L}'´.\-]+,?\s*(?:n\.?[º°]?\s*)?(?:\d{1,4}[a-zA-Z]?(?:-\d{1,4})?|s\/n)` +
+    // Lower case ("en la calle hace 3 días" is not an address): the number
+    // must end the address (comma, ordinal or line end follows).
+    String.raw`|(?:calle|c\/|avenida|avda\.|plaza|paseo)\s+(?:[\p{L}'´.\-]+\s+){0,4}?[\p{L}'´.\-]+,?\s*\d{1,4}[a-zA-Z]?(?:-\d{1,4})?(?=\s*(?:[,º°ª]|$)|\s+\d{1,2}\s?[º°ª]))` +
+    String.raw`${ES_FLOOR_TAIL}(?:\s?(?:Apt\.?|Puerta|[Pp]iso|Esc\.?|Escalera|Bloque|Portal)\s?\d{1,3}[A-Z]?)?(?![\p{L}\d])`,
+  'gmu'
+);
+// Spanish colegiado shape on its own: "28/40/21424" (province/year/number).
+const ES_COLEGIADO_SHAPE_PATTERN = /(?<![\d\/])\d{2}\/\d{2}\/\d{5}(?![\d\/])/g;
 
 // Ages: "92 años", "92 Jahre alt", "92 ans", "92 anni", "92 jaar", "edad: 92".
 const EU_AGE_PATTERN = /(?<![\p{L}])(?:edad|alter|âge|età|leeftijd|idade)\s*[:.\-]?\s*(\d{2,3})|(?<!\d)(\d{2,3})\s*(?:años|Jahre|Jahren|ans|anni|jaar|anos)(?![\p{L}])/giu;
@@ -365,6 +545,30 @@ export const EU_RULES: IdentifierRule[] = [
   { label: 'ADDRESS_LINE', category: 'EU', description: 'Street address (DE/FR/ES/IT/NL/PT)', pattern: EU_ADDRESS_PATTERN, priority: 79 },
   { label: 'POSTCODE_EU', category: 'EU', description: 'Postcode followed by a town', pattern: EU_POSTCODE_TOWN_PATTERN, priority: 82 },
   { label: 'DATE', category: 'EU', description: 'Date with a month name (DE/FR/ES/IT/NL/PT)', pattern: EU_DATE_PATTERN, priority: 83 },
+  { label: 'DATE', category: 'EU', description: 'Day and month without a year', pattern: EU_DAY_MONTH_PATTERN, priority: 81, validate: (v) => !/\bmay\.?$/.test(v) },
+  { label: 'DATE', category: 'EU', description: 'Month and year without a day', pattern: MONTH_YEAR_PATTERN, priority: 81 },
+  { label: 'LICENSE', category: 'EU', description: 'Clinician registration number (LANR, RPPS, RIZIV, colegiado, BIG…)', pattern: CLINICIAN_REG_PATTERN, priority: 93 },
+  { label: 'LICENSE', category: 'EU', description: 'Belgium RIZIV/INAMI number', pattern: BE_RIZIV_PATTERN, priority: 91, country: 'BE' },
+  { label: 'REFERENCE_ID', category: 'EU', description: 'Belgium VAT number', pattern: BE_VAT_PATTERN, priority: 90, country: 'BE' },
+  { label: 'IBAN', category: 'EU', description: 'IBAN in groups of four (mod-97)', pattern: IBAN_SPACED_PATTERN, priority: 95, validate: validIban },
+  { label: 'PHONE', category: 'EU', description: 'German phone with area code and extension', pattern: DE_PHONE_PATTERN, priority: 72, validate: phoneDigits },
+  { label: 'POSTCODE_EU', category: 'EU', description: '4-digit postcode followed by a town (BE/AT/CH/DK/LU)', pattern: POSTCODE4_TOWN_PATTERN, priority: 82 },
+  { label: 'ADDRESS_LINE', category: 'EU', description: 'Spanish street with number and floor', pattern: ES_STREET_PATTERN, priority: 80 },
+  { label: 'ADDRESS_LINE', category: 'HIPAA', description: 'US city before state and ZIP', pattern: US_CITY_PATTERN, priority: 77 },
+  { label: 'ADDRESS_LINE', category: 'HIPAA', description: 'GPS coordinates', pattern: GPS_PATTERN, priority: 88 },
+  { label: 'REFERENCE_ID', category: 'EU', description: 'Ward, room or bed code', pattern: WARD_ROOM_PATTERN, priority: 60 },
+  { label: 'NAME', category: 'EU', description: 'Dictation initials (ek/pf)', pattern: DICTATION_INITIALS_PATTERN, priority: 84 },
+  { label: 'DEVICE_ID', category: 'HIPAA', description: 'MAC address', pattern: MAC_PATTERN, priority: 90 },
+  { label: 'DEVICE_ID', category: 'HIPAA', description: 'IMEI (labelled)', pattern: IMEI_PATTERN, priority: 92 },
+  { label: 'ACCOUNT_NUMBER', category: 'HIPAA', description: 'Card security code (labelled)', pattern: CVV_PATTERN, priority: 90 },
+  { label: 'VEHICLE_VIN', category: 'HIPAA', description: 'Licence plate (labelled)', pattern: PLATE_PATTERN, priority: 90 },
+  { label: 'ACCOUNT_NUMBER', category: 'HIPAA', description: 'Payment card number (Luhn)', pattern: CARD_PATTERN, priority: 93, validate: validLuhn },
+  { label: 'URL', category: 'HIPAA', description: 'Web domain without http/www', pattern: BARE_DOMAIN_PATTERN, priority: 68, validate: domainLooksReal },
+  { label: 'PHONE', category: 'EU', description: 'Spanish phone number (9 digits)', pattern: ES_PHONE_PATTERN, priority: 64 },
+  { label: 'POSTCODE_EU', category: 'EU', description: 'Dutch postcode (1234 AB)', pattern: NL_POSTCODE_PATTERN, priority: 81 },
+  { label: 'REFERENCE_ID', category: 'EU', description: 'Prefixed code (LAB-460507, DR-126782)', pattern: PREFIXED_CODE_PATTERN, priority: 62 },
+  { label: 'LICENSE', category: 'EU', description: 'Spain colegiado number shape (28/40/21424)', pattern: ES_COLEGIADO_SHAPE_PATTERN, priority: 89, country: 'ES' },
+  { label: 'ADDRESS_LINE', category: 'EU', description: 'Street before a postcode and town', pattern: STREET_BEFORE_POSTCODE_PATTERN, priority: 78 },
 
   { label: 'NAME', category: 'EU', description: 'Name (title: Sr., Frau, Mme, Dott., Dhr.…)', pattern: EU_HONORIFIC_PATTERN, priority: 86 },
   { label: 'NAME', category: 'EU', description: 'Name (field: Paciente:, Nachname:, Nom:…)', pattern: EU_NAME_FIELD_PATTERN, priority: 85 },

@@ -154,7 +154,7 @@ describe('EU language records (rules only)', () => {
   it('does not read insurance or ID-card keywords inside ordinary words or names', () => {
     // "NIR", "CC", "CNI" are case-insensitive keywords: they must end a word
     // and be followed by a value with a digit.
-    const text = 'Ich bin die Nirosha. Nirgends war es besser. Accident and Cnidaria. Nir Barkat called.';
+    const text = 'Ich bin die Nirina. Nirgends war es besser. Accident and Cnidaria. Nir called.';
     const labels = runRules(text).map((s) => s.label);
     expect(labels).not.toContain('INSURANCE_ID');
     expect(labels).not.toContain('NATIONAL_ID');
@@ -180,5 +180,63 @@ describe('language detection on short notes', () => {
     ['en', 'Mrs Smith came to the clinic with her daughter and was discharged on the same day.'],
   ])('%s', (lang, text) => {
     expect(detectLanguage(text).lang).toBe(lang);
+  });
+});
+
+// Rules added from the public benchmark datasets (scripts/benchmark.mjs).
+// Every value here is made up.
+describe('benchmark-driven rules', () => {
+  const hidden = (text: string, needle: string) => {
+    const det = detect(text, []);
+    return covered(text, [...det.spans, ...det.quasiSpans], needle);
+  };
+
+  it.each([
+    ['Ingreso el 24 November, revisión el 5 apr.', '24 November'],
+    ['Controle op vrijdag 30 mei in de polikliniek.', '30 mei'],
+    ['Erstdiagnose im Juni 2020, Rezidiv 03/2019.', 'Juni 2020'],
+    ['Erstdiagnose im Juni 2020, Rezidiv 03/2019.', '03/2019'],
+    ['Diagnosticado en octubre de 2016.', 'octubre de 2016'],
+    ['Dr. Anna Beispiel, LANR: 123456789', '123456789'],
+    ['N.º de colegiada: 28/40/21424', '28/40/21424'],
+    ['RPPS : 10123456789', '10123456789'],
+    ['Arts: RIZIV 1-23456-78-901', '1-23456-78-901'],
+    ['Praktijk BTW BE 0123.456.789', 'BE 0123.456.789'],
+    ['Rekening NL91 ABNA 0417 1643 00 op naam van de patiënt.', 'NL91 ABNA 0417 1643 00'],
+    ['Betaald met creditcard 4111 1111 1111 1111.', '4111 1111 1111 1111'],
+    ['Tel. 038372/5704-2, Fax (035201) 8644-4', '038372/5704-2'],
+    ['Tel. 038372/5704-2, Fax (035201) 8644-4', '(035201) 8644-4'],
+    ['Adres: Lindedreef 12, 8540 Deerlijk', 'Lindedreef 12'],
+    ['Adres: Lindedreef 12, 8540 Deerlijk', '8540 Deerlijk'],
+    ['Wohnhaft Kevin-Muster-Allee 134, 01705 Freital', 'Kevin-Muster-Allee 134'],
+    ['Domicilio: c/ del Abedul 5-7, 2º dcha', 'c/ del Abedul 5-7, 2º dcha'],
+    ['Seattle, WA 98101', 'Seattle'],
+    ['Opgehaald op GPS-coördinaten 52.3667, 4.8945.', '52.3667, 4.8945'],
+    ['Station: G7, Zimmer 72', 'G7'],
+    ['Fallkennung: D79011228', 'D79011228'],
+    ['Número de episodio: D44573494', 'D44573494'],
+    ['Toestel IMEI 490154203237518, MAC 00:1A:2B:3C:4D:5E', '490154203237518'],
+    ['Toestel IMEI 490154203237518, MAC 00:1A:2B:3C:4D:5E', '00:1A:2B:3C:4D:5E'],
+    ['Het kenteken NL-AB1234 stond op de parkeerplaats.', 'NL-AB1234'],
+    ['Website: helios-beispielklinikum.de', 'helios-beispielklinikum.de'],
+    ['Oberärztin\nek/pf', 'ek/pf'],
+  ])('hides it: %s', (text, needle) => {
+    expect(hidden(text, needle), needle).toBe(true);
+  });
+
+  it.each([
+    ['Schmerz 3.0/10, Schema 40-0-40, Ratio 9/40/10.', ['3.0/10', '40-0-40']],
+    ['Sehr geehrte Frau Kollegin, sehr geehrter Herr Doktor,', ['Kollegin', 'Doktor']],
+    ['The patient identity was confirmed; GMC registration pending.', ['identity', 'registration']],
+    ['Care for professionnels de santé and occupational therapy.', ['professionnels', 'occupational']],
+    ['Paciente: No, no me duele. Médico: Bueno.', ['No', 'Bueno']],
+    ['Vía oral 2 comprimidos; en la calle hace 3 días.', ['oral 2', 'calle hace 3']],
+    ['Insulin 1000 IE subkutan; result 1/2000 dilution.', ['1000 IE']],
+    ['Werte in mg/dl\nmg/dl', ['mg/dl']],
+    ['Standard ISO-27001 and code ICD-10 applied.', ['ISO-27001']],
+    ['Nirgends war es besser, Nirina.', ['Nirgends']],
+  ])('leaves ordinary text alone: %s', (text, words) => {
+    const det = detect(text, []);
+    for (const w of words) expect(covered(text, [...det.spans, ...det.quasiSpans], w), w).toBe(false);
   });
 });

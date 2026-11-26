@@ -368,8 +368,20 @@ describe('Zoom "[Name] 12:19:14" transcripts in German', () => {
 
   it('treats umlaut spellings and long dropped-letter names as the speaker', () => {
     expect(isSpeakerVariant('Koehler', 'Köhler')).toBe(true);
-    expect(isSpeakerVariant('Nirosha', 'Nirohshah')).toBe(true);
+    expect(isSpeakerVariant('Karosha', 'Karohshah')).toBe(true);
     expect(isSpeakerVariant('Marion', 'Maria')).toBe(false);
+  });
+
+  it('matches names spelled by sound, and run-together double-barrelled names', () => {
+    expect(isSpeakerVariant('Karoscha', 'Karohshah')).toBe(true); // sch = sh, silent h
+    expect(nameParts('Lena Westphal-Brandauer')).toContain('WestphalBrandauer');
+    expect(isSpeakerVariant('Westfalbrandauer', 'WestphalBrandauer')).toBe(true); // ph = f
+    expect(isSpeakerVariant('Kirsche', 'Karohshah')).toBe(false);
+  });
+
+  it('does not take several fillers before a colon ("Ja. Ne:") for a speaker', () => {
+    const t = `[Lena Westphal] 10:00:01\nWie geht es Ihnen?\n\n[Henrik Köhler] 10:00:05\nGut.\nJa. Ne: Interessant.\n\n[Lena Westphal] 10:00:09\nUnd sonst?\n\n[Henrik Köhler] 10:00:12\nJa. Ne: Alles gut.\n`;
+    expect(analyseTranscript(t)!.speakers.map((s) => s.label)).toEqual(['Lena Westphal', 'Henrik Köhler']);
   });
 });
 

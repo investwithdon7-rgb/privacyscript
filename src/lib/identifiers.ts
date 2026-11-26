@@ -76,8 +76,25 @@ export interface IdentifierRule {
 
 // Dates: matches DOB-like and admission-like dates in many common formats.
 // Examples caught: 01/02/2024, 1-2-24, 2024-01-02, 2 Jan 2024, Jan 2, 2024.
+// Numeric dates keep ONE separator throughout: with a mixed class "3.0/10"
+// (a pain score) and "40-0-40" (a dosing schedule) looked like dates.
+// validDateShape then rejects impossible days and months.
 const DATE_PATTERN =
-  /\b(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{2,4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{2,4})\b/gi;
+  /\b(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2}\/\d{2,4}|\d{1,2}-\d{1,2}-\d{2,4}|\d{1,2}\.\d{1,2}\.\d{2,4}|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{2,4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{2,4})\b/gi;
+
+/**
+ * Numeric dates must be possible: day 1–31 and month 1–12 in either order
+ * (d/m/y or m/d/y), or y-m-d. Dates with a month name pass unchanged.
+ */
+export function validDateShape(value: string): boolean {
+  const nums = value.match(/\d+/g);
+  if (!nums || /[A-Za-z]/.test(value) || nums.length !== 3) return true;
+  const [a, b, c] = nums.map(Number);
+  if (nums[0].length === 4) return b >= 1 && b <= 12 && c >= 1 && c <= 31;
+  const dayMonth = a >= 1 && a <= 31 && b >= 1 && b <= 12;
+  const monthDay = a >= 1 && a <= 12 && b >= 1 && b <= 31;
+  return dayMonth || monthDay;
+}
 
 // Phone: lenient, international + US shapes. Requires 10+ digits total to avoid
 // matching short clinical codes. Skips obvious non-phone shapes.
@@ -103,19 +120,19 @@ const SSN_PATTERN = /\b(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b/g;
 // Medical record numbers — labelled context only (very high false-positive risk
 // otherwise; clinical numbers like lab values look identical).
 const MRN_PATTERN =
-  /\b(?:MRN|medical\s+record\s+(?:no|number|#)|patient\s+(?:id|no|number|#)|hospital\s+(?:no|number|#))\s*[:.\-#]?\s*([A-Z0-9\-]{4,20})/gi;
+  /\b(?:MRN|medical\s+record\s+(?:no|number|#)|patient\s+(?:id|no|number|#)|hospital\s+(?:no|number|#))(?![A-Za-z])\s*[:.\-#]?\s*(?=[A-Z\-]*\d)([A-Z0-9\-]{4,20})/gi;
 
 // Health plan beneficiary numbers — labelled context.
 const INSURANCE_PATTERN =
-  /\b(?:member\s+id|policy\s+(?:no|number|#)|insurance\s+(?:id|no|number|#)|plan\s+(?:id|no|number|#)|subscriber\s+(?:id|no|number|#)|beneficiary\s+(?:id|no|number|#))\s*[:.\-#]?\s*([A-Z0-9\-]{4,20})/gi;
+  /\b(?:member\s+id|policy\s+(?:no|number|#)|insurance\s+(?:id|no|number|#)|plan\s+(?:id|no|number|#)|subscriber\s+(?:id|no|number|#)|beneficiary\s+(?:id|no|number|#))(?![A-Za-z])\s*[:.\-#]?\s*(?=[A-Z\-]*\d)([A-Z0-9\-]{4,20})/gi;
 
 // Account numbers — labelled context.
 const ACCOUNT_PATTERN =
-  /\b(?:account\s+(?:no|number|#)|acct\s*(?:no|number|#)?)\s*[:.\-#]?\s*([A-Z0-9\-]{4,20})/gi;
+  /\b(?:account\s+(?:no|number|#)|acct\s*(?:no|number|#)?)(?![A-Za-z])\s*[:.\-#]?\s*(?=[A-Z\-]*\d)([A-Z0-9\-]{4,20})/gi;
 
 // Certificate / licence numbers — labelled context.
 const LICENSE_PATTERN =
-  /\b(?:licen[sc]e|cert(?:ificate)?|registration|DEA|NPI)\s+(?:no|number|#|id)\s*[:.\-#]?\s*([A-Z0-9\-]{4,20})/gi;
+  /\b(?:licen[sc]e|cert(?:ificate)?|registration|DEA|NPI)\s+(?:no|number|#|id)(?![A-Za-z])\s*[:.\-#]?\s*(?=[A-Z\-]*\d)([A-Z0-9\-]{4,20})/gi;
 
 // VIN: 17-char, no I/O/Q.
 const VIN_PATTERN = /\b[A-HJ-NPR-Z0-9]{17}\b/g;
@@ -123,7 +140,7 @@ const VIN_PATTERN = /\b[A-HJ-NPR-Z0-9]{17}\b/g;
 // Device identifier — labelled context (serial number / device ID / bleep).
 // Bleep codes are typically 4 digits; {2,30} covers that and longer device serials.
 const DEVICE_PATTERN =
-  /\b(?:device\s+(?:id|no|number|#|serial)|serial\s+(?:no|number|#)|UDI|bleep|pager\s*(?:no|number)?)\s*[:.\-#]?\s*([A-Z0-9\-]{2,30})/gi;
+  /\b(?:device\s+(?:id|no|number|#|serial)|serial\s+(?:no|number|#)|UDI|bleep|pager\s*(?:no|number)?)(?![A-Za-z])\s*[:.\-#]?\s*(?=[A-Z\-]*\d)([A-Z0-9\-]{2,30})/gi;
 
 const URL_PATTERN =
   /\bhttps?:\/\/[^\s<>"]+|\bwww\.[A-Z0-9.\-]+\.[A-Z]{2,}(?:\/[^\s<>"]*)?/gi;
@@ -193,7 +210,7 @@ const IBAN_PATTERN = /\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/g;
 
 // Passport: heuristic — labelled context only.
 const PASSPORT_PATTERN =
-  /\bpassport\s+(?:no|number|#)\s*[:.\-]?\s*([A-Z0-9]{6,12})\b/gi;
+  /\b(?:passport|paspoort|passeport|reisepass|pasaporte|passaporto)(?:\s*(?:no|number|nummer|nr|num[eé]ro|n[º°]))?\.?(?![A-Za-z])\s*[:.\-#]?\s*(?=[A-Z]*\d)([A-Z0-9]{6,12})\b/gi;
 
 /* ----------------------------------------------------------------------------
  * Quasi-identifiers (flag, do not auto-remove)
@@ -215,7 +232,7 @@ const ETHNICITY_PATTERN =
 // Value class excludes newlines — with \s the capture ran across the line
 // break and swallowed the next field's label ("retired schoolteacher\nEthnicity").
 const OCCUPATION_PATTERN =
-  /\b(?:occupation|job|profession|employed\s+as)[ \t]*[:.\-]?[ \t]*([A-Za-z][A-Za-z \t\-]{2,40})/gi;
+  /\b(?:occupation|job|profession|employed\s+as)(?![A-Za-z])[ \t]*[:.\-]?[ \t]*([A-Za-z][A-Za-z \t\-]{2,40})/gi;
 
 // "Age 92", "age: 95", "94 years old" — require explicit context to avoid
 // matching unrelated 2-3 digit numbers (postcodes, ICD codes, lab values).
@@ -230,7 +247,7 @@ const AGE_OVER_89_PATTERN =
 // Matches "GMC: 6184472", "NMC pin: 12A3456B", "HCPC 09012345" etc.
 // Registered as LICENSE (HIPAA #11 — certificate / licence number).
 const REGISTRATION_PATTERN =
-  /\b(?:GMC|NMC|GDC|HCPC|GPhC|GOC|GOsC)\s*(?:pin\s*#?|no\.?|number|reg\.?)?\s*[:.\-#]?\s*([A-Z0-9\-]{5,12})\b/gi;
+  /\b(?:GMC|NMC|GDC|HCPC|GPhC|GOC|GOsC)\s*(?:pin\s*#?|no\.?|number|registration(?:\s+(?:no\.?|number))?|reg\.?(?![a-z]))?\s*[:.\-#]?\s*(?=[A-Z\-]*\d)([A-Z0-9\-]{5,12})\b/gi;
 
 /* ----------------------------------------------------------------------------
  * Trust / document / referral reference codes  (HIPAA #18)
@@ -352,7 +369,7 @@ export const IDENTIFIER_RULES: IdentifierRule[] = [
   { label: 'ADDRESS_LINE', category: 'HIPAA', description: 'Street address', pattern: ADDRESS_PATTERN, priority: 78 },
 
   // Dates and biometric — DATE > PHONE so ISO dates don't get mislabelled.
-  { label: 'DATE', category: 'HIPAA', description: 'Date', pattern: DATE_PATTERN, priority: 82 },
+  { label: 'DATE', category: 'HIPAA', description: 'Date', pattern: DATE_PATTERN, priority: 82, validate: validDateShape },
   { label: 'BIOMETRIC', category: 'HIPAA', description: 'Biometric descriptor', pattern: BIOMETRIC_PATTERN, priority: 70 },
 
   // Context-anchored name detection (NER fallback — see comments above).

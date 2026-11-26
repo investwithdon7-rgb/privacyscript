@@ -29,3 +29,8 @@ PH records/sample-surveys/
 
 # Small face detector (1.2 MB) ships with the app
 !public/models/ultraface-rfb-320.onnx
+PH records/Sample * German.txt
+
+# Third-party benchmark datasets (downloaded locally, never committed or shipped)
+benchmark-data/
+.benchmark.cjs
